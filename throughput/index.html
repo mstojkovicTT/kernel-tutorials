@@ -509,7 +509,9 @@ matmul_init(cb_a, cb_b);   // NOT binary_op_init_common</pre>
       <div style="display:flex;gap:14px;align-items:center">
         <div class="vizcol"><svg class="ring" id="m7-ca" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap" id="m7-calbl">cb_a · Kt pages</div></div>
         <div class="vizcol"><svg class="ring" id="m7-cb" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap">cb_b · 2·Kt pages</div></div>
+        <div class="vizcol"><svg class="ring vio" id="m7-cout" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap">cb_out · to writer</div></div>
       </div>
+      <div><div class="striplbl">DST registers (8 usable — 1 accumulator)</div><div class="dstslots" id="m7-dst8"></div></div>
       <div class="accbox" id="m7-acc"></div>
       <div class="holder" id="m7-holder">DST: free</div>
       <div><div class="striplbl">C · Mt×Nt output</div><div class="mmgrid" id="m7-c" style="grid-template-columns:repeat(2,30px)"></div></div>
@@ -518,21 +520,11 @@ matmul_init(cb_a, cb_b);   // NOT binary_op_init_common</pre>
   </div>
   <div class="twocol" style="margin-top:20px">
     <div>
-      <p style="color:var(--muted);font-size:13px;margin:0 0 8px">Traffic drops from
+      <p style="color:var(--muted);font-size:13.5px;margin:0">Traffic drops from
       <code>2·Mt·Nt·Kt</code> to <code>Mt·Kt + Mt·Nt·Kt</code> — B is still re-read per row;
-      lesson 08 fixes that dimension too. Measured at Mt=64, Kt=8, Nt=32, sweeping cores:</p>
-      <div class="simbar" style="margin-top:0">
-        <span class="optgrp">cores (HiFi4)
-          <button data-tc="1">1</button><button data-tc="8">8</button>
-          <button data-tc="32">32</button><button data-tc="64" class="on">64</button>
-        </span>
-      </div>
-      <svg class="chart" id="t7-chart" role="img" aria-label="bandwidth vs cores, lesson 07"></svg>
-      <div class="statrow">
-        <span class="stat"><span class="k">device time</span><span class="v" id="t7-time"></span><span class="u">µs</span></span>
-        <span class="stat"><span class="k">bandwidth</span><span class="v" id="t7-bw"></span><span class="u">GB/s</span></span>
-        <span class="stat"><span class="k">throughput</span><span class="v" id="t7-tf"></span><span class="u">TFLOP/s</span></span>
-      </div>
+      lesson 08 fixes that dimension too. On silicon at Mt=64, Kt=8, Nt=32, this kernel plus
+      row-parallelism goes <b>2025 µs at 1 core → 201 µs / 193 GB/s at 32 cores</b> — right back
+      onto the DRAM ceiling, which sets up the surprise on the right.</p>
     </div>
     <div>
       <div class="panelbox">
@@ -1217,15 +1209,6 @@ function renderMM(sim){
 const mm=new Sim("mm",buildMM,renderMM);
 
 /* ============================== slide 6 · lesson 07 ============================== */
-const T7={cur:64,order:[1,8,32,64],
-  data:{1:{t:"2025",bw:19,tf:"0.53"},8:{t:"275",bw:141,tf:"3.9"},32:{t:"201",bw:193,tf:"5.3"},64:{t:"207",bw:187,tf:"5.2"}}};
-function t7Render(){
-  const d=T7.data[T7.cur];
-  $("t7-time").textContent=d.t;$("t7-bw").textContent=d.bw;$("t7-tf").textContent=d.tf;
-  lineChart($("t7-chart"),["1","8","32","64"],T7.order.map(x=>T7.data[x].bw),
-    {ceiling:195,ceilLabel:"~195 GB/s DRAM ceiling",sel:T7.order.indexOf(T7.cur),
-     labels:T7.order.map(x=>T7.data[x].tf+" TF/s"),ymax:232,color:"var(--violet)",w:420,h:200});
-}
 /* lesson 07 tuned matmul stepper — same tiny problem as lesson 06 */
 function buildM7(){
   const {Mt,Kt,Nt}=MM;
@@ -1316,6 +1299,7 @@ function renderM7(sim){
   $("m7-cp").innerHTML=paneHTML(sim.kernels[1]);
   drawRing("m7-ca",s.cba,{noCenter:true,noPtr:true});
   drawRing("m7-cb",s.cbb,{noCenter:true,noPtr:true});
+  drawRing("m7-cout",s.cbout,{noCenter:true,noPtr:true});
   $("m7-calbl").textContent=s.cba.visible===Kt?"cb_a · row "+sim.kernels[1].mt+" resident":"cb_a · Kt pages";
   $("m7-a").innerHTML=s.aT.map((t,i)=>
     '<div class="tile '+(i===s.lastA?"t-reading":t.count?"t-read":"t-empty")+'" title="A tile '+i+", read "+t.count+' times">'+(t.count||"·")+"</div>").join("");
@@ -1324,6 +1308,9 @@ function renderM7(sim){
   $("m7-c").innerHTML=s.cT.map(cs=>
     '<div class="tile vio '+(cs==="written"?"t-written":"t-empty")+'">'+(cs==="written"?"C":"·")+"</div>").join("");
   const a=s.acc;
+  $("m7-dst8").innerHTML=Array.from({length:8},(x,i)=>{
+    const on=i===0&&a.holder!=="free";
+    return '<div class="dsts'+(on?" on":"")+'" title="dst['+i+']">'+(on?"Σ"+a.terms:i)+"</div>";}).join("");
   $("m7-acc").innerHTML=a.holder==="free"?"DST[0] — released"
     :"<b>DST[0]</b> = Σ<sub>k&lt;"+a.terms+"</sub> A["+a.mt+",k]·B[k,"+a.nt+"] &nbsp;·&nbsp; k = "+a.terms+"/"+Kt;
   const h=$("m7-holder");
@@ -1417,10 +1404,6 @@ document.querySelectorAll("button[data-b]").forEach(b=>{
   b.onclick=()=>{l05block=+b.dataset.b;
     document.querySelectorAll("button[data-b]").forEach(x=>x.classList.toggle("on",x===b));l05.reset();};
 });
-document.querySelectorAll("button[data-tc]").forEach(b=>{
-  b.onclick=()=>{T7.cur=+b.dataset.tc;
-    document.querySelectorAll("button[data-tc]").forEach(x=>x.classList.toggle("on",x===b));t7Render();};
-});
 document.querySelectorAll("button[data-mb]").forEach(b=>{
   b.onclick=()=>{T8.cur=+b.dataset.mb;
     document.querySelectorAll("button[data-mb]").forEach(x=>x.classList.toggle("on",x===b));t8Render();};
@@ -1429,7 +1412,7 @@ document.querySelectorAll("button[data-fx]").forEach(b=>{
   b.onclick=()=>{FX.mode=b.dataset.fx==="naive"?"naive":"meas";
     document.querySelectorAll("button[data-fx]").forEach(x=>x.classList.toggle("on",x===b));fxRender();};
 });
-latDraw();mcRender();t7Render();t8Render();fxRender();
+latDraw();mcRender();t8Render();fxRender();
 lineChart($("l05-chart"),["block 1","2","4","8"],[74,115,166,195],
   {ceiling:195,ceilLabel:"~195 GB/s ceiling",ymax:232,color:"var(--teal)",w:400,h:180,
    labels:["170 µs","109","75.8","64.6"]});
