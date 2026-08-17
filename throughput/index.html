@@ -1,0 +1,1314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Throughput Dojo</title>
+<meta name="description" content="Interactive walkthrough of tt-metal kernel performance — multi-core scaling, batched NoC transactions, matmul K-accumulation, operand reuse, math fidelity — with the kernel dojo's real measured numbers.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+<style>
+/* ---------- tokens: dark-first (deliberate), light overrides both ways ---------- */
+:root{
+  --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
+  --line:#2a3245; --text:#e6eaf3; --muted:#8f97ab; --faint:#5b647a;
+  --teal:#45c8bb; --amber:#e8a84c; --violet:#9d7bf5; --red:#ef6b6b; --green:#5bc17e;
+  --hl:#233048; --hl-blk:#3d2330;
+  --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f2f3f7; --panel:#ffffff; --panel2:#e9ebf3; --code-bg:#f6f7fb;
+    --line:#d4d8e4; --text:#20263a; --muted:#5d6579; --faint:#8b92a6;
+    --teal:#0d8f82; --amber:#a86f10; --violet:#6b46d8; --red:#c04545; --green:#2e8f57;
+    --hl:#dfe7f5; --hl-blk:#f6dcdc;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f2f3f7; --panel:#ffffff; --panel2:#e9ebf3; --code-bg:#f6f7fb;
+  --line:#d4d8e4; --text:#20263a; --muted:#5d6579; --faint:#8b92a6;
+  --teal:#0d8f82; --amber:#a86f10; --violet:#6b46d8; --red:#c04545; --green:#2e8f57;
+  --hl:#dfe7f5; --hl-blk:#f6dcdc;
+}
+:root[data-theme="dark"]{
+  --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
+  --line:#2a3245; --text:#e6eaf3; --muted:#8f97ab; --faint:#5b647a;
+  --teal:#45c8bb; --amber:#e8a84c; --violet:#9d7bf5; --red:#ef6b6b; --green:#5bc17e;
+  --hl:#233048; --hl-blk:#3d2330;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:15px;line-height:1.55;overflow:hidden}
+h1,h2,h3{font-family:var(--mono);letter-spacing:-.02em;text-wrap:balance;margin:0}
+code,pre,kbd,.mono{font-family:var(--mono)}
+button{font-family:var(--mono);cursor:pointer}
+a{color:var(--teal)}
+
+#deck{height:calc(100% - 52px);position:relative}
+.slide{display:none;height:100%;overflow-y:auto;overflow-x:hidden}
+.slide.active{display:block;animation:fadein .28s ease}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){
+  .slide.active{animation:none}
+  .pg-filling,.pg-draining,.flight.on,.t-reading,.t-writing{animation:none !important}
+  .fbar .bar{transition:none !important}
+}
+.wrap{max-width:1280px;margin:0 auto;padding:28px 40px 40px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.eyebrow b{color:var(--teal);font-weight:600}
+h2{font-size:26px;margin-bottom:6px}
+.lede{color:var(--muted);max-width:70ch;margin:4px 0 20px}
+.lede code{color:var(--text);font-size:.92em}
+.src-note{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:18px}
+
+/* ---------- deck bar ---------- */
+#deckbar{height:52px;border-top:1px solid var(--line);background:var(--panel);
+  display:flex;align-items:center;gap:14px;padding:0 20px}
+#deckbar .title{font-family:var(--mono);font-size:12px;color:var(--muted);flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#deckbar .dots{display:flex;gap:8px}
+#deckbar .dots button{width:10px;height:10px;border-radius:50%;border:1px solid var(--faint);
+  background:transparent;padding:0}
+#deckbar .dots button.on{background:var(--teal);border-color:var(--teal)}
+#deckbar .dots button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.navbtn{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  border-radius:6px;padding:6px 14px;font-size:13px}
+.navbtn:hover{border-color:var(--teal)}
+.navbtn:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+#pgnum{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:44px;text-align:center}
+
+/* ---------- title slide ---------- */
+.hero{display:flex;flex-direction:column;justify-content:center;min-height:82%;max-width:1100px;margin:0 auto;padding:40px}
+.hero h1{font-size:clamp(38px,6vw,68px);line-height:1.06;font-weight:700}
+.hero h1 .dim{color:var(--faint)}
+.hero .sub{font-size:17px;color:var(--muted);max-width:64ch;margin-top:18px}
+.hero .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:30px}
+kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;font-size:11px;background:var(--panel)}
+.api-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+.api-chips code{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:4px 10px;font-size:12.5px}
+.api-chips .c-t{color:var(--teal)} .api-chips .c-a{color:var(--amber)} .api-chips .c-v{color:var(--violet)}
+
+/* ---------- generic panels & tables ---------- */
+.panelbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+table.opstable{border-collapse:collapse;width:100%;font-size:14px}
+table.opstable th,table.opstable td{border:1px solid var(--line);padding:9px 14px;text-align:left}
+table.opstable th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--panel2)}
+table.opstable code{font-size:13px}
+table.opstable td.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.t{color:var(--teal)} .a{color:var(--amber)} .v{color:var(--violet)} .r{color:var(--red)} .g{color:var(--green)}
+blockquote.rule{border-left:3px solid var(--teal);margin:18px 0;padding:10px 20px;background:var(--panel);
+  border-radius:0 8px 8px 0;font-size:16px;max-width:76ch}
+blockquote.rule b{color:var(--teal)}
+.twocol{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:18px}
+@media (max-width:900px){.twocol{grid-template-columns:1fr}}
+.gonext{font-family:var(--mono);font-size:13px;background:var(--code-bg);border:1px solid var(--line);
+  border-radius:8px;padding:14px 18px;line-height:2}
+.gonext .c{color:var(--faint)}
+
+/* ---------- sim layout ---------- */
+.simbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0 16px}
+.simbar .sp{flex:1}
+.ctl{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:6px;
+  padding:7px 16px;font-size:13px}
+.ctl:hover{border-color:var(--teal)}
+.ctl:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.ctl.primary{background:var(--teal);color:var(--bg);border-color:var(--teal);font-weight:700}
+.tickbox{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.tickbox b{color:var(--text)}
+.optgrp{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.optgrp button{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px}
+.optgrp button.on{border-color:var(--teal);color:var(--teal);background:color-mix(in srgb,var(--teal) 10%,transparent)}
+.optgrp button:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.hangbar{display:none;background:color-mix(in srgb,var(--red) 14%,var(--panel));border:1px solid var(--red);
+  color:var(--text);border-radius:8px;padding:10px 16px;font-size:13.5px;margin:0 0 14px}
+.hangbar.on{display:block}
+.hangbar b{color:var(--red);font-family:var(--mono)}
+.donebar{display:none;background:color-mix(in srgb,var(--green) 12%,var(--panel));border:1px solid var(--green);
+  border-radius:8px;padding:10px 16px;font-size:13.5px;margin:0 0 14px}
+.donebar.on{display:block}
+.simgrid{display:grid;grid-template-columns:minmax(300px,1fr) minmax(320px,1.08fr) minmax(300px,1fr);gap:18px;align-items:start}
+.simgrid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;align-items:start}
+@media (max-width:1000px){.simgrid,.simgrid3{grid-template-columns:1fr}}
+
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.pane-hd{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel2)}
+.pane-hd .kname{font-family:var(--mono);font-size:12.5px;font-weight:600}
+.proc{font-family:var(--mono);font-size:10px;letter-spacing:.08em;border-radius:4px;padding:2px 7px;border:1px solid}
+.proc-teal{color:var(--teal);border-color:var(--teal)}
+.proc-amber{color:var(--amber);border-color:var(--amber)}
+.proc-violet{color:var(--violet);border-color:var(--violet)}
+pre.code{margin:0;padding:10px 0;background:var(--code-bg);font-size:12.3px;line-height:1.62;overflow-x:auto}
+.cl{padding:0 14px;white-space:pre}
+.cl-cur{background:var(--hl);box-shadow:inset 3px 0 0 var(--teal)}
+.pane.amberside .cl-cur{box-shadow:inset 3px 0 0 var(--amber)}
+.pane.violetside .cl-cur{box-shadow:inset 3px 0 0 var(--violet)}
+.cl-blk{background:var(--hl-blk);box-shadow:inset 3px 0 0 var(--red)}
+.cl-mark{background:var(--hl)}
+.pane-ft{padding:7px 12px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11.5px;min-height:34px}
+.st-run{color:var(--muted)} .st-done{color:var(--green)} .st-blk{color:var(--red)}
+
+/* ---------- CB ring, strips, DST ---------- */
+.vizcol{display:flex;flex-direction:column;align-items:center;gap:10px}
+.vizcol .cbcap{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.vizcol .cbcap b{color:var(--text)}
+svg.ring{overflow:visible}
+.pg{stroke-width:1.5}
+.pg-free{fill:var(--panel2);stroke:var(--line)}
+.pg-reserved{fill:color-mix(in srgb,var(--teal) 14%,transparent);stroke:var(--teal);stroke-dasharray:4 3}
+.pg-filling{fill:color-mix(in srgb,var(--teal) 45%,transparent);stroke:var(--teal);animation:pgpulse 1s ease-in-out infinite}
+.pg-full{fill:color-mix(in srgb,var(--teal) 65%,transparent);stroke:var(--teal);stroke-dasharray:4 3}
+.pg-ready{fill:var(--teal);stroke:var(--teal)}
+.pg-draining{fill:var(--amber);stroke:var(--amber);animation:pgpulse 1s ease-in-out infinite}
+.ring.vio .pg-reserved{fill:color-mix(in srgb,var(--violet) 14%,transparent);stroke:var(--violet)}
+.ring.vio .pg-filling,.ring.vio .pg-full{fill:color-mix(in srgb,var(--violet) 55%,transparent);stroke:var(--violet)}
+.ring.vio .pg-ready{fill:var(--violet);stroke:var(--violet)}
+@keyframes pgpulse{50%{opacity:.55}}
+@keyframes nocblink{50%{opacity:.4}}
+.pgt{font-family:var(--mono);font-size:13px;font-weight:700;fill:var(--bg);text-anchor:middle;dominant-baseline:central}
+.pg-reserved-t,.pg-free-t{fill:var(--muted)}
+.ctr-n{font-family:var(--mono);font-size:20px;font-weight:700;fill:var(--text);text-anchor:middle}
+.ctr-l{font-family:var(--mono);font-size:9px;letter-spacing:.1em;fill:var(--muted);text-anchor:middle;text-transform:uppercase}
+.ptr{font-family:var(--mono);font-size:10px;font-weight:700;text-anchor:middle;dominant-baseline:central}
+.ptr-rd{fill:var(--amber)} .ptr-wr{fill:var(--teal)}
+
+.strip{display:flex;gap:5px;flex-wrap:wrap;justify-content:center}
+.striplbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);text-align:center;margin-bottom:5px}
+.tile{width:30px;height:30px;border-radius:6px;border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;font-weight:600;color:var(--faint);background:var(--panel2)}
+.t-reading{border-color:var(--teal);color:var(--teal);animation:pgpulse 1s infinite}
+.t-read{background:color-mix(in srgb,var(--teal) 22%,var(--panel2));border-color:var(--teal);color:var(--text)}
+.t-empty{border-style:dashed}
+.t-writing{border-color:var(--amber);color:var(--amber);animation:pgpulse 1s infinite}
+.t-written{background:var(--amber);border-color:var(--amber);color:var(--bg)}
+.t-written.vio,.tile.vio.t-written{background:var(--violet);border-color:var(--violet)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-family:var(--mono);font-size:11px;color:var(--muted);justify-content:center}
+.legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px;border:1px solid var(--line)}
+
+.dstbox{display:flex;flex-direction:column;align-items:center;gap:7px}
+.dstslots{display:flex;gap:4px}
+.dsts{width:26px;height:26px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;color:var(--faint)}
+.dsts.on{background:var(--violet);border-color:var(--violet);color:var(--bg);font-weight:700}
+.holder{font-family:var(--mono);font-size:10.5px;border-radius:99px;padding:3px 12px;border:1px solid var(--line);color:var(--muted)}
+.holder.math{color:var(--violet);border-color:var(--violet)}
+.holder.committed{color:var(--teal);border-color:var(--teal)}
+.holder.pack{color:var(--amber);border-color:var(--amber)}
+.flight{font-family:var(--mono);font-size:11px;border:1px dashed var(--line);border-radius:5px;padding:2px 10px;color:var(--faint);letter-spacing:.08em}
+.flight.on{color:var(--teal);border-color:var(--teal);animation:nocblink .8s infinite}
+
+/* ---------- charts ---------- */
+svg.chart{display:block;max-width:100%;height:auto}
+.axt{font-family:var(--mono);font-size:10px;fill:var(--muted)}
+.axt2{font-family:var(--mono);font-size:10px;font-weight:700;fill:var(--text)}
+.chartcap{font-family:var(--mono);font-size:11px;color:var(--muted);text-align:center;margin-top:4px}
+
+/* ---------- stats & regime chips ---------- */
+.statrow{display:flex;gap:26px;flex-wrap:wrap;margin:14px 0;align-items:flex-end}
+.stat .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);display:block}
+.stat .v{font-family:var(--mono);font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.stat .u{font-size:12px;color:var(--muted);font-family:var(--mono)}
+.regime{font-family:var(--mono);font-size:11.5px;border:1px solid;border-radius:99px;padding:3px 12px;display:inline-block}
+.regime.mem{color:var(--teal);border-color:var(--teal)}
+.regime.trans{color:var(--amber);border-color:var(--amber)}
+.regime.other{color:var(--red);border-color:var(--red)}
+
+/* ---------- slide 2: latency toy ---------- */
+.latgrid{display:grid;grid-template-columns:minmax(420px,1.4fr) minmax(300px,1fr);gap:28px;align-items:start;margin-top:8px}
+@media (max-width:1000px){.latgrid{grid-template-columns:1fr}}
+.factrow{display:flex;gap:12px;align-items:baseline;margin-bottom:10px}
+.factrow .k{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:190px}
+.factrow .v2{font-family:var(--mono);font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+
+/* ---------- slide 3: core grid ---------- */
+.mcgrid{display:grid;grid-template-columns:auto minmax(320px,1fr);gap:34px;align-items:start;margin-top:8px}
+@media (max-width:1000px){.mcgrid{grid-template-columns:1fr}}
+.coregrid{display:grid;grid-template-columns:repeat(8,36px);gap:5px}
+.coregrid .cc{width:36px;height:36px;border:1px solid var(--line);border-radius:6px;background:var(--panel2);
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9px;color:var(--faint);font-variant-numeric:tabular-nums}
+.coregrid .cc.on{background:color-mix(in srgb,var(--teal) 30%,var(--panel2));border-color:var(--teal);color:var(--text)}
+
+/* ---------- slide 5: matmul viz ---------- */
+.mmgrid{display:grid;gap:4px;justify-content:center}
+.accbox{border:1px solid var(--violet);border-radius:8px;padding:8px 14px;font-family:var(--mono);font-size:12px;min-width:230px;text-align:center;background:var(--panel)}
+.accbox b{color:var(--violet)}
+.trapcards{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:18px}
+@media (max-width:900px){.trapcards{grid-template-columns:1fr}}
+.trap{background:var(--panel);border:1px solid var(--red);border-radius:10px;padding:12px 16px;font-size:13.5px}
+.trap b{color:var(--red);font-family:var(--mono)}
+.trap code{font-size:12px}
+.trap pre{margin:8px 0 4px;padding:8px 10px;background:var(--code-bg);border-radius:6px;font-size:11.5px;line-height:1.6;overflow-x:auto}
+
+/* ---------- slide 7: Mb diagram ---------- */
+.mbdiag{display:flex;gap:18px;align-items:center;justify-content:center;flex-wrap:wrap;margin:10px 0}
+.mbcol{display:flex;flex-direction:column;gap:4px;align-items:center}
+.mbrow{display:flex;gap:3px}
+.mq{width:18px;height:18px;border-radius:4px;border:1px solid var(--line);background:var(--panel2)}
+.mq.a{background:color-mix(in srgb,var(--amber) 40%,var(--panel2));border-color:var(--amber)}
+.mq.b{background:var(--teal);border-color:var(--teal)}
+.mq.c{background:var(--violet);border-color:var(--violet)}
+.mblbl{font-family:var(--mono);font-size:10.5px;color:var(--muted);text-align:center}
+.mbarrow{font-family:var(--mono);color:var(--faint);font-size:16px}
+
+/* ---------- slide 8: fidelity bars ---------- */
+.fbars{display:flex;flex-direction:column;gap:12px;margin-top:16px;max-width:560px}
+.fbar{display:grid;grid-template-columns:64px 1fr 110px;gap:12px;align-items:center;font-family:var(--mono);font-size:12.5px}
+.fbar .lane{background:var(--panel2);border:1px solid var(--line);border-radius:4px;height:20px}
+.fbar .bar{height:18px;border-radius:3px;background:var(--violet);transition:width .5s ease;min-width:3px;margin:0}
+.fbar .tv{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted)}
+.fbar .tv b{color:var(--text)}
+</style>
+</head>
+<body>
+<main id="deck"></main>
+<nav id="deckbar">
+  <button class="navbtn" id="prevb" aria-label="previous slide">◀</button>
+  <span id="pgnum">1/9</span>
+  <button class="navbtn" id="nextb" aria-label="next slide">▶</button>
+  <span class="title" id="barTitle"></span>
+  <span class="dots" id="dots"></span>
+</nav>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+/* ============================== slides ============================== */
+const SLIDES = [
+{t:"Throughput Dojo", h:`
+<div class="hero">
+  <p class="eyebrow"><b>tt-metal kernel dojo</b> · interactive walkthrough · part 2</p>
+  <h1>Throughput<br>Dojo<span class="dim">.</span></h1>
+  <p class="sub">Part 1 made kernels <em>correct</em>. This deck makes them <em>fast</em> — lessons
+  04–08 of the dojo: multi-core, pipelining, matmul, and reuse. One question runs through all of it:
+  <b style="color:var(--text)">which resource are you actually waiting on?</b> Every number in this
+  deck was measured on a Wormhole n150 by <code>./dojo bench</code> — including two results that
+  contradict the obvious guess.</p>
+  <div class="api-chips">
+    <code class="c-t">per-core runtime args</code><code class="c-t">noc_async_read_barrier</code>
+    <code class="c-v">matmul_tiles</code><code class="c-v">SrcOrder::Reverse</code>
+    <code class="c-a">MathFidelity</code><code>GB/s vs TFLOP/s</code>
+  </div>
+  <p class="hint"><kbd>→</kbd> next slide &nbsp;·&nbsp; <kbd>←</kbd> back &nbsp;·&nbsp;
+  on sim slides: <b>step</b> advances every processor by one instruction</p>
+</div>`},
+
+{t:"Latency ≠ bandwidth", h:`
+<div class="wrap">
+  <p class="eyebrow">02 · foundations</p>
+  <h2>Latency is not bandwidth — and you can only fix one of them</h2>
+  <p class="lede">A DRAM read takes hundreds of cycles to <em>respond</em>, but the chip can move
+  ~195&nbsp;GB/s in <em>volume</em>. You cannot make one request return sooner. You <b>can</b> stop
+  waiting for it before issuing the next — get many requests <b>in flight</b> so their latencies
+  overlap. Toggle the two strategies:</p>
+  <div class="simbar">
+    <span class="optgrp">strategy
+      <button data-m="serial" class="on" id="lat-mserial">serial: wait each one out</button>
+      <button data-m="over" id="lat-mover">overlapped: barrier once</button>
+    </span>
+    <span class="optgrp" style="margin-left:10px">requests
+      <button data-n="2">2</button><button data-n="4" class="on">4</button><button data-n="8">8</button>
+    </span>
+  </div>
+  <div class="latgrid">
+    <div>
+      <svg class="chart" id="lat-svg" role="img" aria-label="request timeline"></svg>
+      <div class="chartcap" id="lat-cap"></div>
+    </div>
+    <div>
+      <div class="panelbox" style="margin-bottom:16px">
+        <div class="factrow"><span class="k">total time</span><span class="v2" id="lat-tot"></span></div>
+        <div class="factrow"><span class="k">latency paid</span><span class="v2" id="lat-paid"></span></div>
+        <div class="factrow"><span class="k">throughput</span><span class="v2" id="lat-thru"></span></div>
+      </div>
+      <pre class="code" style="border:1px solid var(--line);border-radius:8px"><div class="cl">noc_async_read_page(0, src, dst0); // returns NOW —</div><div class="cl">noc_async_read_page(1, src, dst1); //   data not here yet</div><div class="cl">noc_async_read_page(2, src, dst2);</div><div class="cl cl-mark">noc_async_read_barrier();  // wait ONCE, for all three</div></pre>
+      <p style="color:var(--muted);font-size:13.5px;margin-top:14px">Measured stakes (lesson 04): one
+      core issuing one read at a time reaches <b class="r">9.7&nbsp;GB/s</b>. The same chip, kept
+      properly busy, reaches <b class="g">195&nbsp;GB/s</b> — <b>20× apart on identical hardware</b>.
+      The requests never got faster; the waiting overlapped.</p>
+    </div>
+  </div>
+  <p class="src-note">kernel_dojo/theory/01-latency-and-throughput.md §1–2 — the delivery truck, and “in flight”</p>
+</div>`},
+
+{t:"Lesson 04 — the core-count knee", h:`
+<div class="wrap">
+  <p class="eyebrow">03 · lesson 04 · multi-core</p>
+  <h2>64 cores, same binary — and more is not always faster</h2>
+  <p class="lede">Parallelising is not a kernel rewrite: every core runs the <em>same compiled
+  binary</em> and differs only in its <b>per-core runtime args</b> — <code>start_tile</code> and
+  <code>n_tiles</code>. The loop becomes <code>for (i = start; i &lt; start + n; i++)</code>, and that
+  one change is worth 20×. Pick a core count and watch the measured curve
+  (element-wise add, 2048 tiles):</p>
+  <div class="simbar">
+    <span class="optgrp">cores
+      <button data-c="1">1</button><button data-c="2">2</button><button data-c="8">8</button>
+      <button data-c="32" class="on">32</button><button data-c="64">64</button>
+    </span>
+    <span class="sp"></span>
+    <span class="tickbox" id="mc-tiles"></span>
+  </div>
+  <div class="mcgrid">
+    <div>
+      <div class="striplbl" style="text-align:left">8×8 compute grid · tiles per core</div>
+      <div class="coregrid" id="mc-grid"></div>
+      <p style="color:var(--muted);font-size:13px;max-width:40ch;margin-top:12px" id="mc-note"></p>
+    </div>
+    <div>
+      <svg class="chart" id="mc-chart" role="img" aria-label="bandwidth vs core count"></svg>
+      <div class="chartcap">measured GB/s vs cores · dashed line = ~195 GB/s DRAM ceiling · point labels = device time</div>
+      <div class="statrow">
+        <span class="stat"><span class="k">device time</span><span class="v" id="mc-time"></span><span class="u">µs</span></span>
+        <span class="stat"><span class="k">bandwidth</span><span class="v" id="mc-bw"></span><span class="u">GB/s</span></span>
+        <span class="stat"><span class="k">speedup</span><span class="v" id="mc-sp"></span><span class="u">× vs 1 core</span></span>
+        <span class="stat" id="mc-regime"></span>
+      </div>
+    </div>
+  </div>
+  <p class="src-note">exercises/04_multi_core/README.md — measured table · theory/07-multi-core.md — “Choosing a core count” · at 64 cores the host round trip is 168 µs for 70 µs of device work: dispatch now costs more than the kernel</p>
+</div>`},
+
+{t:"Live · lesson 05 — batch & block", h:`
+<div class="wrap">
+  <p class="eyebrow">04 · live simulation · exercise 05_pipelining</p>
+  <h2>Same 8 cores, 2.6× faster: batch the reads, block the DST</h2>
+  <p class="lede">Lesson 04's kernel calls a barrier with <em>one</em> read in flight — every tile
+  pays the full DRAM round trip, serially. The fix is three-fold: issue <code>2×block</code> reads
+  before <em>one</em> barrier (latencies overlap — watch the <b>in flight</b> badge), do the whole
+  block in <em>one</em> <code>tile_regs_*</code> handshake, and give CBs <code>2×block</code> pages
+  so producer and consumer never take turns. Run block&nbsp;1 to the end, then block&nbsp;4, and
+  compare cycle counts.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="l05-step">⏵ step</button>
+    <button class="ctl" id="l05-play">▶ play</button>
+    <button class="ctl" id="l05-reset">↺ reset</button>
+    <span class="optgrp">block
+      <button data-b="1" class="on">1</button><button data-b="4">4</button>
+    </span>
+    <span class="flight" id="l05-flight">NoC in flight: 0</span>
+    <span class="sp"></span>
+    <span class="tickbox" id="l05-res"></span>
+    <span class="tickbox">cycle <b id="l05-tick">0</b></span>
+  </div>
+  <div class="hangbar" id="l05-hang"></div>
+  <div class="donebar" id="l05-done"></div>
+  <div class="simgrid3">
+    <div class="pane" id="l05-rp"></div>
+    <div class="pane violetside" id="l05-cp"></div>
+    <div class="pane amberside" id="l05-wp"></div>
+  </div>
+  <div style="display:flex;gap:24px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:18px">
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div><div class="striplbl">DRAM a</div><div class="strip" id="l05-srcA"></div></div>
+      <div><div class="striplbl">DRAM b</div><div class="strip" id="l05-srcB"></div></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:center">
+      <div class="vizcol"><svg class="ring" id="l05-ra" width="112" height="112" viewBox="0 0 112 112"></svg><div class="cbcap">cb_a · <span id="l05-ta"></span></div></div>
+      <div class="vizcol"><svg class="ring" id="l05-rb" width="112" height="112" viewBox="0 0 112 112"></svg><div class="cbcap">cb_b · <span id="l05-tb"></span></div></div>
+    </div>
+    <div class="dstbox">
+      <div class="striplbl">DST · one handshake per block</div>
+      <div class="dstslots" id="l05-dst8"></div>
+      <div class="holder" id="l05-holder">free</div>
+    </div>
+    <div class="vizcol"><svg class="ring vio" id="l05-rout" width="130" height="130" viewBox="0 0 130 130"></svg><div class="cbcap">cb_out · <span id="l05-tout"></span></div></div>
+    <div><div class="striplbl">DRAM dst = a + b</div><div class="strip" id="l05-dst"></div></div>
+  </div>
+  <div style="display:flex;gap:34px;justify-content:center;align-items:flex-start;flex-wrap:wrap;margin-top:22px">
+    <div style="max-width:400px">
+      <svg class="chart" id="l05-chart" role="img" aria-label="bandwidth vs block size"></svg>
+      <div class="chartcap">measured · 8 cores, 2048 tiles · block 1 → 8: 170 → 64.6 µs</div>
+    </div>
+    <p style="color:var(--muted);font-size:13.5px;max-width:44ch;margin:6px 0 0">Blocked, 8 cores
+    hit <b class="g">195&nbsp;GB/s</b> — the <em>same 64.6&nbsp;µs</em> that 32 unblocked cores
+    achieved in lesson 04. Efficiency substituted for 4× the hardware, and both roads end at the
+    same DRAM ceiling.</p>
+  </div>
+  <p class="src-note">exercises/05_pipelining/solution/{reader,compute,writer}.cpp — trimmed loop bodies · README.md — measured block sweep</p>
+</div>`},
+
+{t:"Live · lesson 06 — matmul accumulation", h:`
+<div class="wrap">
+  <p class="eyebrow">05 · live simulation · exercise 06_matmul</p>
+  <h2>DST becomes an accumulator: Σ over K into one slot</h2>
+  <p class="lede"><code>matmul_tiles</code> <b>accumulates</b>: <code>DST[0] += A_tile @ B_tile</code>.
+  Since <code>tile_regs_acquire()</code> zeroes DST, the whole K-reduction is a loop into one slot —
+  at the FPU's internal precision — and <b>one</b> <code>pack_tile</code> after the loop. Step the
+  real kernels on a tiny <b>Mt=2, Kt=3, Nt=2</b> problem and watch the read counters: this kernel
+  re-reads its inputs once per output row/column.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="mm-step">⏵ step</button>
+    <button class="ctl" id="mm-play">▶ play</button>
+    <button class="ctl" id="mm-reset">↺ reset</button>
+    <span class="sp"></span>
+    <span class="tickbox" id="mm-reads"></span>
+    <span class="tickbox">cycle <b id="mm-tick">0</b></span>
+  </div>
+  <div class="hangbar" id="mm-hang"></div>
+  <div class="donebar" id="mm-done"></div>
+  <div class="simgrid">
+    <div class="pane" id="mm-rp"></div>
+    <div class="vizcol">
+      <div style="display:flex;gap:22px;align-items:flex-start;justify-content:center">
+        <div><div class="striplbl">A · Mt×Kt (reads)</div><div class="mmgrid" id="mm-a" style="grid-template-columns:repeat(3,30px)"></div></div>
+        <div><div class="striplbl">B · Kt×Nt (reads)</div><div class="mmgrid" id="mm-b" style="grid-template-columns:repeat(2,30px)"></div></div>
+      </div>
+      <div style="display:flex;gap:14px;align-items:center">
+        <div class="vizcol"><svg class="ring" id="mm-ca" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap">cb_a</div></div>
+        <div class="vizcol"><svg class="ring" id="mm-cb" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap">cb_b</div></div>
+      </div>
+      <div class="accbox" id="mm-acc"></div>
+      <div class="holder" id="mm-holder">DST: free</div>
+      <div><div class="striplbl">C · Mt×Nt output</div><div class="mmgrid" id="mm-c" style="grid-template-columns:repeat(2,30px)"></div></div>
+    </div>
+    <div class="pane violetside" id="mm-cp"></div>
+  </div>
+  <div class="trapcards">
+    <div class="trap"><b>trap 1 · pack inside the K loop</b><br>
+      Packing writes to a bfloat16 CB — 7 mantissa bits. Round the partial sum on every step of a
+      Kt=64 reduction and the result is mush; the symptom is <em>results that drift as Kt grows</em>.
+      Keep the sum in DST and pack <b>once, after the loop</b>.</div>
+    <div class="trap"><b>trap 2 · SrcOrder::Reverse</b>
+      <pre>compute_kernel_hw_startup&lt;SrcOrder::Reverse&gt;(cb_a, cb_b, cb_out);
+matmul_init(cb_a, cb_b);   // NOT binary_op_init_common</pre>
+      Matmul is the one op where in0 → SrcB and in1 → SrcA. Use the default
+      <code>Regular</code> and you get a plausible-looking <em>wrong</em> matrix — no error.
+      Two lines that cost people an afternoon.</div>
+  </div>
+  <p class="src-note">exercises/06_matmul/solution/{reader,compute}.cpp — trimmed loop bodies · theory/06-compute.md — “Matmul, and its two traps”</p>
+</div>`},
+
+{t:"Lesson 07 — reuse & the fidelity surprise", h:`
+<div class="wrap">
+  <p class="eyebrow">06 · lesson 07 · matmul at scale</p>
+  <h2>Reuse A's row, parallelise by rows — then the surprise</h2>
+  <p class="lede">Lesson 06 reads <code>2·Mt·Nt·Kt</code> tiles to touch <code>Mt·Kt + Kt·Nt</code>
+  of data — at 64×64×8 that is <b>65536 reads for 1024 tiles: 64× redundant</b>. The fix costs one
+  moved line: keep A's row resident (<code>cb_wait_front(cb_a, Kt)</code> once, pop <em>after</em>
+  the column loop) and stream only B. Then give each core a range of rows. Measured at
+  Mt=64, Kt=8, Nt=32:</p>
+  <div class="twocol">
+    <div>
+      <div class="pane violetside" id="t7-pane"></div>
+      <p style="color:var(--muted);font-size:13px;margin-top:10px">Traffic drops from
+      <code>2·Mt·Nt·Kt</code> to <code>Mt·Kt + Mt·Nt·Kt</code> — B is still re-read per row.
+      Lesson 08 fixes that dimension too.</p>
+    </div>
+    <div>
+      <div class="simbar" style="margin-top:0">
+        <span class="optgrp">cores (HiFi4)
+          <button data-tc="1">1</button><button data-tc="8">8</button>
+          <button data-tc="32">32</button><button data-tc="64" class="on">64</button>
+        </span>
+      </div>
+      <svg class="chart" id="t7-chart" role="img" aria-label="bandwidth vs cores, lesson 07"></svg>
+      <div class="statrow">
+        <span class="stat"><span class="k">device time</span><span class="v" id="t7-time"></span><span class="u">µs</span></span>
+        <span class="stat"><span class="k">bandwidth</span><span class="v" id="t7-bw"></span><span class="u">GB/s</span></span>
+        <span class="stat"><span class="k">throughput</span><span class="v" id="t7-tf"></span><span class="u">TFLOP/s</span></span>
+      </div>
+      <div class="panelbox" style="margin-top:8px">
+        <div class="striplbl" style="text-align:left">the surprise · fidelity sweep at 64 cores</div>
+        <table class="opstable" style="margin-top:6px">
+          <tr><th>fidelity</th><th>math passes</th><th>measured time</th></tr>
+          <tr><td><code>HiFi4</code></td><td class="num">4</td><td class="num">207 µs</td></tr>
+          <tr><td><code>HiFi2</code></td><td class="num">2</td><td class="num">209 µs</td></tr>
+          <tr><td><code>LoFi</code></td><td class="num">1</td><td class="num">208 µs</td></tr>
+        </table>
+        <p style="color:var(--muted);font-size:13px;margin:10px 0 0">A <b class="r">4× cut in math
+        work bought nothing</b> — all three within 1%, at 1 core and at 64. The kernel sits on the
+        DRAM ceiling (or on its own serial data movement); the multiplier is idle either way.
+        <b style="color:var(--text)">The FPU was never what you were waiting on.</b></p>
+      </div>
+    </div>
+  </div>
+  <p class="src-note">exercises/07_matmul_tuned/README.md — “Reading the benchmark” · solution/compute.cpp — the no-pop window · theory/01 §7: “reducing the math work 4× changes the runtime by 1%”</p>
+</div>`},
+
+{t:"Lesson 08 — output blocking", h:`
+<div class="wrap">
+  <p class="eyebrow">07 · lesson 08 · 2-D reuse</p>
+  <h2>Hold Mb rows of A; each read of B now feeds Mb outputs</h2>
+  <p class="lede">Reuse was one-dimensional: A's row served Nt columns, but each B column was used
+  once and dropped. Hold <b>Mb</b> rows of A resident (<code>Mb·Kt</code> tiles, one DST accumulator
+  per row — DST caps Mb at 8) and B's traffic falls by Mb. Sweep Mb and watch <em>which number
+  stops moving</em> — measured at Mt=128, Kt=8, Nt=32, 16 cores:</p>
+  <div class="simbar">
+    <span class="optgrp">Mb (rows per block)
+      <button data-mb="1" class="on">1</button><button data-mb="2">2</button>
+      <button data-mb="4">4</button><button data-mb="8">8</button>
+    </span>
+    <span class="sp"></span>
+    <span class="regime" id="t8-status"></span>
+  </div>
+  <div class="simgrid3" style="grid-template-columns:auto 1fr 1fr;gap:26px">
+    <div>
+      <div class="mbdiag" id="t8-diag"></div>
+      <pre class="code" style="border:1px solid var(--line);border-radius:8px;margin-top:12px"><div class="cl">tile_regs_acquire();</div><div class="cl">for (uint32_t m = 0; m &lt; Mb; m++)</div><div class="cl">  for (uint32_t kt = 0; kt &lt; Kt; kt++)</div><div class="cl cl-mark">    matmul_tiles(cb_a, cb_b,</div><div class="cl cl-mark">        m * Kt + kt, kt, m); // B idx kt: SHARED</div><div class="cl">tile_regs_commit();</div></pre>
+      <p style="color:var(--muted);font-size:12.5px;max-width:36ch;margin-top:8px">The cost:
+      Mb trades <b>parallelism for intensity</b> — Mt/Mb work items, so Mb=8 on Mt=128 caps you
+      at 16 cores. And <code>cb_a</code> must hold Mb·Kt tiles of L1.</p>
+    </div>
+    <div>
+      <svg class="chart" id="t8-chartbw" role="img" aria-label="bandwidth vs Mb"></svg>
+      <div class="chartcap">bandwidth · dashed = ~195 GB/s ceiling</div>
+      <svg class="chart" id="t8-chartt" role="img" aria-label="time vs Mb" style="margin-top:10px"></svg>
+      <div class="chartcap">device time</div>
+    </div>
+    <div>
+      <div class="statrow" style="flex-direction:column;align-items:flex-start;gap:14px">
+        <span class="stat"><span class="k">device time</span><span class="v" id="t8-time"></span><span class="u">µs</span></span>
+        <span class="stat"><span class="k">DRAM traffic</span><span class="v" id="t8-traffic"></span><span class="u">MiB</span></span>
+        <span class="stat"><span class="k">bandwidth</span><span class="v" id="t8-bw"></span><span class="u">GB/s</span></span>
+        <span class="stat"><span class="k">throughput</span><span class="v" id="t8-tput"></span><span class="u">TFLOP/s</span></span>
+      </div>
+      <p style="color:var(--muted);font-size:13.5px;max-width:40ch" id="t8-note"></p>
+    </div>
+  </div>
+  <p class="src-note">exercises/08_output_blocking/README.md — “Reading the benchmark — the actual lesson” · solution/compute.cpp — Mb accumulators, window index m·Kt+kt</p>
+</div>`},
+
+{t:"The real bottleneck", h:`
+<div class="wrap">
+  <p class="eyebrow">08 · lesson 08, continued · the counterintuitive one</p>
+  <h2>Traffic halved. Time moved 3%. So what IS the limit?</h2>
+  <p class="lede">At Mb 4→8 you cut traffic another 30% and gained 3%; bandwidth collapsed to
+  118&nbsp;GB/s, far off the 195 ceiling. <b>Not memory-bound any more.</b> The obvious suspect is
+  the FPU — so run the decisive experiment: cut the math passes 4× with one host-side line and see
+  if the time moves.</p>
+  <div class="simbar">
+    <span class="optgrp">show
+      <button data-fx="naive" class="on">if the FPU were the limit</button>
+      <button data-fx="meas">what was measured</button>
+    </span>
+  </div>
+  <div class="twocol">
+    <div>
+      <div class="fbars" id="fx-bars"></div>
+      <p class="chartcap" style="text-align:left;margin-top:10px" id="fx-cap"></p>
+    </div>
+    <div>
+      <p style="font-size:14.5px;max-width:56ch"><b class="r">A 4× reduction in math passes buys
+      2%.</b> So it isn't the multiplier either. What's left is the <b>per-instruction cost of
+      <code>matmul_tiles</code></b>: every call unpacks a fresh pair of tiles into SrcA/SrcB and
+      issues one 32×32×32 operation. That issue-and-unpack overhead is what the kernel pays for —
+      and fidelity only scales the part that was never the bottleneck.</p>
+      <p style="color:var(--muted);font-size:13.5px;max-width:56ch;margin-top:12px">The fix is
+      <code>matmul_block</code> — an rt×ct×kt block in a single instruction, amortising the unpack
+      across many more MACs. That's how production matmuls reach the regime where fidelity is worth
+      tuning, and it's where you'd go next (see
+      <code>tt_metal/programming_examples/matmul_multicore_reuse_mcast</code>).</p>
+      <blockquote class="rule" style="margin-top:16px">Every optimisation either <b>moves the
+      bottleneck</b> or wastes your time. The Mb 4→8 step looked like progress on paper — 30% less
+      traffic! — and delivered 3%. Measure after each change.</blockquote>
+    </div>
+  </div>
+  <p class="src-note">exercises/08_output_blocking/README.md — “So what is the limit?” · fidelity cases at Mb=8, 16 cores: HiFi4 159.8 µs, HiFi2 156.1 µs, LoFi 155.9 µs</p>
+</div>`},
+
+{t:"Which number to watch", h:`
+<div class="wrap">
+  <p class="eyebrow">09 · the calculus</p>
+  <h2>Which number to watch</h2>
+  <blockquote class="rule">Before optimising anything: <b>which number is pinned?</b>
+  GB/s stuck at ~195 → memory-bound: move fewer bytes; nothing else will help.
+  TFLOP/s near peak → compute-bound: do cheaper math.
+  Neither → latency-bound: you aren't keeping either resource busy — overlap more.</blockquote>
+  <p class="lede">The deciding quantity is <b>arithmetic intensity</b> — FLOPs per byte moved.
+  Element-wise add: 0.17 FLOP/B, hopelessly memory-bound on any chip. Matmul: grows with reuse —
+  which is why this course's matmul went from 0.53 to 13.4 TFLOP/s without the FPU ever
+  getting faster.</p>
+  <div class="twocol">
+    <div>
+      <h3 style="font-size:15px;margin-bottom:10px">The levers, as measured in this course</h3>
+      <table class="opstable">
+        <tr><th>lever</th><th>measured payoff</th><th>regime it needs</th></tr>
+        <tr><td>more cores <span class="mono" style="color:var(--faint)">(L04)</span></td>
+            <td class="num">20× — then <span class="r">regresses at 64</span></td><td>until DRAM saturates</td></tr>
+        <tr><td>batched NoC + blocked DST <span class="mono" style="color:var(--faint)">(L05)</span></td>
+            <td class="num">2.6× on the same 8 cores</td><td>latency-bound</td></tr>
+        <tr><td>operand reuse <span class="mono" style="color:var(--faint)">(L07/08)</span></td>
+            <td class="num">394 → 160 µs (2.5×)</td><td>memory-bound — until you leave it</td></tr>
+        <tr><td>math fidelity <span class="mono" style="color:var(--faint)">(L07/08)</span></td>
+            <td class="num"><span class="r">~1–2% here</span></td><td>compute-bound only — never was</td></tr>
+      </table>
+      <p style="color:var(--muted);font-size:13px;margin-top:12px">And measure the <em>device</em>:
+      at 64 cores the device did the work in 70 µs while the host observed 168 µs. Optimise against
+      the host figure and you're tuning the dispatch path.</p>
+    </div>
+    <div>
+      <h3 style="font-size:15px;margin-bottom:10px">Now measure real silicon</h3>
+      <div class="gonext">
+        ./dojo bench 04 <span class="c"># the core-count knee</span><br>
+        ./dojo bench 05 <span class="c"># the block-size curve — 2.6×</span><br>
+        ./dojo bench 07 <span class="c"># fidelity at both ends of scaling</span><br>
+        ./dojo bench 08 <span class="c"># watch the bottleneck move</span><br>
+        ./dojo theory 1 <span class="c"># the foundations, from scratch</span><br>
+        ./dojo theory 8 <span class="c"># all the levers, with numbers</span>
+      </div>
+      <p style="color:var(--muted);font-size:13.5px;margin-top:14px">The workflow: get it correct →
+      measure the baseline → work out the regime → pull the <em>matching</em> lever → change one
+      thing → re-measure. Did the pinned number come unpinned? Everything in this deck is from
+      <span class="mono">kernel_dojo</span> lessons 04–08; timings vary a few percent run to run,
+      so treat &lt;5% as noise.</p>
+    </div>
+  </div>
+  <p class="src-note">kernel_dojo/theory/08-performance.md — “The levers, with measured results” · “A workflow”</p>
+</div>`}
+];
+
+/* ============================== CB model ============================== */
+function newCB(cap){return {capacity:cap,
+  pages:Array.from({length:cap},()=>({state:"free",tile:null})),
+  rd:0, wrRes:0, wrPush:0, free:cap, visible:0, pushed:0, popped:0};}
+const pageAt=(cb,i)=>cb.pages[((i%cb.capacity)+cb.capacity)%cb.capacity];
+
+function cbReserve(cb,n){
+  if(n>cb.capacity) return {blocked:"cb_reserve_back("+n+") can NEVER succeed — the CB only has "+cb.capacity+" pages"};
+  if(cb.free<n) return {blocked:"cb_reserve_back — need "+n+" free, have "+cb.free};
+  for(let k=0;k<n;k++) pageAt(cb,cb.wrRes+k).state="reserved";
+  cb.wrRes+=n; cb.free-=n; return null;
+}
+function cbPush(cb,n){
+  for(let k=0;k<n;k++) pageAt(cb,cb.wrPush+k).state="ready";
+  cb.wrPush+=n; cb.visible+=n; cb.pushed+=n; return null;
+}
+function cbWait(cb,n){
+  if(n>cb.capacity) return {blocked:"cb_wait_front("+n+") can NEVER succeed — the CB only has "+cb.capacity+" pages"};
+  if(cb.visible<n) return {blocked:"cb_wait_front — need "+n+" visible, have "+cb.visible};
+  return null;
+}
+function cbPop(cb,n){
+  for(let k=0;k<n;k++){const p=pageAt(cb,cb.rd+k); p.state="free"; p.tile=null;}
+  cb.rd+=n; cb.visible-=n; cb.free+=n; cb.popped+=n; return null;
+}
+
+/* ============================== sim engine ============================== */
+/* Same engine as the circular-buffer deck, extended with an optional
+   state.tickHook() called once per tick — used to model NoC latency, so
+   overlapped reads genuinely arrive later than they were issued. */
+const allSims=[];
+class Sim{
+  constructor(id,build,render){this.id=id;this.buildFn=build;this.renderFn=render;this.timer=null;allSims.push(this);this.reset();}
+  reset(){this.stopPlay();const s=this.buildFn();this.kernels=s.kernels;this.state=s;this.tick=0;this.stall=0;this.hang=false;this.render();}
+  get running(){return this.kernels.some(k=>!k.done);}
+  step(){
+    if(this.hang||!this.running) return;
+    if(this.state.tickHook) this.state.tickHook();
+    let progressed=false;
+    for(const k of this.kernels){
+      if(k.done) continue;
+      const ins=k.program[k.pc];
+      const r=ins.run(k,this.state)||{};
+      if(r.blocked){k.blocked=r.blocked;}
+      else{k.blocked=null;progressed=true;if(!r.stay&&!r.jumped&&!k.done)k.pc++;}
+    }
+    this.tick++;
+    if(!progressed){this.stall++;if(this.stall>=6){this.hang=true;this.stopPlay();}}
+    else this.stall=0;
+    if(!this.running){this.stopPlay();if(this.onDone)this.onDone(this);}
+    this.render();
+  }
+  render(){this.renderFn(this);}
+  playToggle(){
+    if(this.timer){this.stopPlay();}
+    else{
+      if(this.hang||!this.running) this.reset();
+      this.timer=setInterval(()=>{this.step();if(this.hang||!this.running)this.stopPlay();},420);
+      if(this.playBtn)this.playBtn.textContent="⏸ pause";
+    }
+  }
+  stopPlay(){if(this.timer){clearInterval(this.timer);this.timer=null;}if(this.playBtn)this.playBtn.textContent="▶ play";}
+}
+function wireSim(sim,prefix){
+  $(prefix+"-step").onclick=()=>{sim.stopPlay();sim.step();};
+  sim.playBtn=$(prefix+"-play");
+  sim.playBtn.onclick=()=>sim.playToggle();
+  $(prefix+"-reset").onclick=()=>sim.reset();
+}
+
+/* ============================== render helpers ============================== */
+function paneHTML(k){
+  const cur=(!k.done)?k.program[k.pc].line:-1;
+  const lines=k.lines.map((ln,idx)=>{
+    let cls="cl";
+    if(idx===cur) cls+=k.blocked?" cl-blk":" cl-cur";
+    return '<div class="'+cls+'">'+(esc(ln)||" ")+"</div>";
+  }).join("");
+  const st=k.done?'<span class="st-done">✓ kernel_main returned</span>'
+    :k.blocked?'<span class="st-blk">⏳ blocked: '+esc(k.blocked)+"</span>"
+    :'<span class="st-run">running'+(k.status?" · "+k.status(k):"")+"</span>";
+  return '<div class="pane-hd"><span class="kname">'+k.name+'</span><span class="proc proc-'+k.color+'">'+k.proc+'</span></div>'
+    +'<pre class="code">'+lines+'</pre><div class="pane-ft">'+st+"</div>";
+}
+function staticPane(el,name,proc,color,lines,marks){
+  const mk=marks||[];
+  el.innerHTML='<div class="pane-hd"><span class="kname">'+name+'</span><span class="proc proc-'+color+'">'+proc+'</span></div>'
+    +'<pre class="code">'+lines.map((ln,i)=>'<div class="cl'+(mk.includes(i)?" cl-mark":"")+'">'+(esc(ln)||" ")+"</div>").join("")+"</pre>";
+}
+function pol(cx,cy,r,aDeg){const a=aDeg*Math.PI/180;return [cx+r*Math.cos(a),cy+r*Math.sin(a)];}
+function arcPath(cx,cy,r0,r1,a0,a1){
+  const [x0,y0]=pol(cx,cy,r1,a0),[x1,y1]=pol(cx,cy,r1,a1),
+        [x2,y2]=pol(cx,cy,r0,a1),[x3,y3]=pol(cx,cy,r0,a0);
+  const lg=(a1-a0)>180?1:0;
+  return "M"+x0.toFixed(1)+" "+y0.toFixed(1)+" A"+r1+" "+r1+" 0 "+lg+" 1 "+x1.toFixed(1)+" "+y1.toFixed(1)
+    +" L"+x2.toFixed(1)+" "+y2.toFixed(1)+" A"+r0+" "+r0+" 0 "+lg+" 0 "+x3.toFixed(1)+" "+y3.toFixed(1)+" Z";
+}
+function drawRing(svgId,cb,opts){
+  const svg=(typeof svgId==="string")?$(svgId):svgId; if(!svg) return;
+  const o=opts||{};
+  const size=svg.viewBox.baseVal.width||parseFloat(svg.getAttribute("width"));
+  const showPtr=!o.noPtr&&cb.capacity>1&&size>=160;
+  const cx=size/2,cy=size/2,r1=size/2-(showPtr?16:4),r0=r1*0.58;
+  const cap=cb.capacity;let out="";
+  if(cap===1){
+    const p=cb.pages[0];
+    out+='<circle cx="'+cx+'" cy="'+cy+'" r="'+((r0+r1)/2)+'" fill="none" stroke-width="'+(r1-r0)+'" class="pg pg-'+p.state+'" style="fill:none"/>';
+    if(p.tile!==null){const [tx,ty]=pol(cx,cy,(r0+r1)/2,-90);out+='<text x="'+tx+'" y="'+ty+'" class="pgt">'+p.tile+"</text>";}
+  }else{
+    const gap=Math.min(5,360/cap*0.06);
+    for(let i=0;i<cap;i++){
+      const a0=-90+i*360/cap+gap,a1=-90+(i+1)*360/cap-gap;
+      const p=cb.pages[i];
+      out+='<path d="'+arcPath(cx,cy,r0,r1,a0,a1)+'" class="pg pg-'+p.state+'"/>';
+      const am=(a0+a1)/2,[tx,ty]=pol(cx,cy,(r0+r1)/2,am);
+      const lbl=p.tile!==null?p.tile:(p.state==="free"?"":"·");
+      const tcls=(p.state==="ready"||p.state==="draining")?"pgt":"pgt pg-free-t";
+      if(lbl!=="")out+='<text x="'+tx.toFixed(1)+'" y="'+ty.toFixed(1)+'" class="'+tcls+'">'+lbl+"</text>";
+    }
+    if(showPtr){
+      const slotMid=idx=>-90+((((idx%cap)+cap)%cap)+0.5)*360/cap;
+      const wAng=slotMid(cb.wrRes),rAng=slotMid(cb.rd);
+      const [wlx,wly]=pol(cx,cy,r1+9,wAng);
+      const [rlx,rly]=pol(cx,cy,Math.max(r0-11,10),rAng);
+      out+='<text x="'+wlx.toFixed(1)+'" y="'+wly.toFixed(1)+'" class="ptr ptr-wr">W▸</text>'
+         +'<text x="'+rlx.toFixed(1)+'" y="'+rly.toFixed(1)+'" class="ptr ptr-rd">R</text>';
+    }
+  }
+  if(!o.noCenter&&size>=100){
+    out+='<text x="'+cx+'" y="'+(cy-3)+'" class="ctr-n">'+cb.visible+"/"+cap+"</text>"
+       +'<text x="'+cx+'" y="'+(cy+13)+'" class="ctr-l">visible</text>';
+  }
+  svg.innerHTML=out;
+}
+function stripHTML(arr,vio){
+  return arr.map((c,i)=>{
+    let cls="tile t-"+c.state; if(vio&&c.state==="written")cls+=" vio";
+    let lbl=(c.val!==undefined&&c.val!==null)?c.val:(c.state==="empty"?"·":i);
+    return '<div class="'+cls+'" title="tile '+i+'">'+lbl+"</div>";
+  }).join("");
+}
+function hangHTML(where){
+  return "<b>⚠ device hang</b> — every processor is blocked and no push/pop can ever unblock them. "
+    +"In the dojo this test fails after 30 s with “device hang”. "+(where||"");
+}
+
+/* ============================== chart helper ============================== */
+function fmtNum(v){return v>=100?String(Math.round(v)):String(Math.round(v*10)/10);}
+function lineChart(svg,xs,ys,o){
+  o=o||{};
+  const W=o.w||380,H=o.h||210,padL=46,padR=14,padT=16,padB=30;
+  svg.setAttribute("viewBox","0 0 "+W+" "+H);
+  const ymax=o.ymax||Math.max(...ys,o.ceiling||0)*1.14;
+  const X=i=>padL+(W-padL-padR)*(xs.length===1?0.5:i/(xs.length-1));
+  const Y=v=>H-padB-(H-padT-padB)*(v/ymax);
+  let out="";
+  for(let g=0;g<=4;g++){
+    const v=ymax*g/4,y=Y(v);
+    out+='<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+y.toFixed(1)
+      +'" stroke="var(--line)" stroke-width="1"'+(g?' stroke-dasharray="2 4"':"")+"/>"
+      +'<text x="'+(padL-6)+'" y="'+(y+3).toFixed(1)+'" class="axt" text-anchor="end">'+fmtNum(v)+"</text>";
+  }
+  if(o.ceiling){
+    const y=Y(o.ceiling);
+    out+='<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(W-padR)+'" y2="'+y.toFixed(1)
+      +'" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="6 4"/>'
+      +'<text x="'+(W-padR)+'" y="'+(y-5).toFixed(1)+'" class="axt" text-anchor="end" style="fill:var(--red)">'+(o.ceilLabel||"")+"</text>";
+  }
+  xs.forEach((x,i)=>{out+='<text x="'+X(i).toFixed(1)+'" y="'+(H-8)+'" class="axt" text-anchor="middle">'+x+"</text>";});
+  if(o.xlab)out+='<text x="'+((padL+W-padR)/2).toFixed(1)+'" y="'+(H-8)+'" class="axt" text-anchor="middle" dx="0" dy="0"></text>';
+  const col=o.color||"var(--teal)";
+  out+='<path d="'+ys.map((v,i)=>(i?"L":"M")+X(i).toFixed(1)+" "+Y(v).toFixed(1)).join(" ")+'" fill="none" stroke="'+col+'" stroke-width="2"/>';
+  ys.forEach((v,i)=>{
+    const sel=i===o.sel;
+    out+='<circle cx="'+X(i).toFixed(1)+'" cy="'+Y(v).toFixed(1)+'" r="'+(sel?6:3.5)+'" fill="'+col+'"'
+      +(sel?' stroke="var(--text)" stroke-width="1.5"':"")+"/>";
+    if(o.labels&&o.labels[i]!=null)
+      out+='<text x="'+X(i).toFixed(1)+'" y="'+(Y(v)-10).toFixed(1)+'" class="'+(sel?"axt2":"axt")+'" text-anchor="middle">'+o.labels[i]+"</text>";
+  });
+  svg.innerHTML=out;
+}
+
+/* ============================== deck plumbing ============================== */
+const deck=$("deck"),dots=$("dots");
+SLIDES.forEach((s,i)=>{
+  const sec=document.createElement("section");
+  sec.className="slide";sec.innerHTML=s.h;deck.appendChild(sec);
+  const d=document.createElement("button");
+  d.title=s.t;d.onclick=()=>go(i);dots.appendChild(d);
+});
+let cur=0;
+function go(i){
+  cur=Math.max(0,Math.min(SLIDES.length-1,i));
+  document.querySelectorAll(".slide").forEach((el,j)=>el.classList.toggle("active",j===cur));
+  document.querySelectorAll("#dots button").forEach((el,j)=>el.classList.toggle("on",j===cur));
+  $("pgnum").textContent=(cur+1)+"/"+SLIDES.length;
+  $("barTitle").textContent=SLIDES[cur].t;
+  allSims.forEach(s=>s.stopPlay());
+}
+$("prevb").onclick=()=>go(cur-1);
+$("nextb").onclick=()=>go(cur+1);
+addEventListener("keydown",e=>{
+  if(e.key==="ArrowRight"||e.key==="PageDown")go(cur+1);
+  else if(e.key==="ArrowLeft"||e.key==="PageUp")go(cur-1);
+});
+go(0);
+
+/* ============================== slide 2 · latency toy ============================== */
+const LAT={mode:"serial",n:4,L:6};
+function latDraw(){
+  const n=LAT.n,L=LAT.L;
+  const serialTotal=n*(L+1),overTotal=n+L;
+  const total=LAT.mode==="serial"?serialTotal:overTotal;
+  const rowH=26,W=920,H=n*rowH+58,padL=64,padR=16;
+  const X=t=>padL+(W-padL-padR)*t/serialTotal;
+  const svg=$("lat-svg");
+  svg.setAttribute("viewBox","0 0 "+W+" "+H);
+  let out="";
+  for(let g=0;g<=serialTotal;g+=L+1){
+    out+='<line x1="'+X(g).toFixed(1)+'" y1="6" x2="'+X(g).toFixed(1)+'" y2="'+(H-30)+'" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 5"/>'
+       +'<text x="'+X(g).toFixed(1)+'" y="'+(H-16)+'" class="axt" text-anchor="middle">'+g+"</text>";
+  }
+  for(let i=0;i<n;i++){
+    const start=LAT.mode==="serial"?i*(L+1):i;
+    const y=10+i*rowH;
+    out+='<text x="'+(padL-8)+'" y="'+(y+13)+'" class="axt" text-anchor="end">req '+i+"</text>"
+      +'<rect x="'+X(start).toFixed(1)+'" y="'+y+'" width="'+(X(start+1)-X(start)).toFixed(1)+'" height="16" rx="3" fill="var(--teal)"/>'
+      +'<rect x="'+X(start+1).toFixed(1)+'" y="'+y+'" width="'+(X(start+1+L)-X(start+1)).toFixed(1)
+      +'" height="16" rx="3" fill="color-mix(in srgb,var(--teal) 14%,transparent)" stroke="var(--teal)" stroke-dasharray="3 3"/>'
+      +'<circle cx="'+X(start+1+L).toFixed(1)+'" cy="'+(y+8)+'" r="4.5" fill="var(--green)"/>';
+  }
+  out+='<line x1="'+X(total).toFixed(1)+'" y1="4" x2="'+X(total).toFixed(1)+'" y2="'+(H-30)+'" stroke="var(--amber)" stroke-width="2"/>'
+     +'<text x="'+(X(total)+6).toFixed(1)+'" y="14" class="axt2" style="fill:var(--amber)">total = '+total+" ticks</text>";
+  svg.innerHTML=out;
+  $("lat-cap").textContent=LAT.mode==="serial"
+    ?"solid = issue (1 tick) · dashed = DRAM latency ("+L+" ticks) · each request waits for the previous one's arrival"
+    :"same requests, issued back-to-back — the dashed latencies overlap, and one barrier waits for all of them";
+  $("lat-tot").textContent=total+" ticks";
+  $("lat-paid").textContent=LAT.mode==="serial"?n+" × latency — every request waits alone":"≈ 1 × latency — the waits overlap";
+  const sp=Math.round(serialTotal/total*10)/10;
+  $("lat-thru").innerHTML=LAT.mode==="serial"
+    ?n+" tiles / "+total+" ticks (baseline)"
+    :n+" tiles / "+total+" ticks — <b class='g'>"+sp+"× the throughput</b>, same hardware";
+}
+
+/* ============================== slide 3 · lesson 04 core knee ============================== */
+const MC={cur:32,order:[1,2,8,32,64],
+  data:{1:{t:"1293",bw:9.7,sp:"1.0"},2:{t:"647",bw:19.4,sp:"2.0"},8:{t:"170",bw:74,sp:"7.6"},
+        32:{t:"64.6",bw:195,sp:"20"},64:{t:"69.6",bw:181,sp:"18.6"}},
+  notes:{1:"One core cannot come close to saturating DRAM — it spends its life waiting on round trips.",
+    2:"Perfectly linear so far: 2 cores is exactly 2×. The memory system has headroom to spare.",
+    8:"Still near-linear at 7.6×. Aggregate demand is approaching what DRAM can supply.",
+    32:"The knee. ~195 GB/s is this chip's practical DRAM ceiling for interleaved tiles — the fastest configuration measured.",
+    64:"64 cores is SLOWER than 32. Past the knee the extra cores don't just fail to help — they contend for a memory system that is already full."}};
+(function(){const g=$("mc-grid");let h="";for(let i=0;i<64;i++)h+='<div class="cc" data-i="'+i+'"></div>';g.innerHTML=h;})();
+function mcRender(){
+  const c=MC.cur,d=MC.data[c],per=2048/c;
+  document.querySelectorAll("#mc-grid .cc").forEach((el,i)=>{
+    const on=i<c;el.classList.toggle("on",on);el.textContent=on?per:"";
+  });
+  $("mc-tiles").innerHTML="2048 tiles ÷ "+c+" cores = <b>"+per+"</b> tiles/core";
+  $("mc-time").textContent=d.t;$("mc-bw").textContent=d.bw;$("mc-sp").textContent=d.sp;
+  $("mc-note").textContent=MC.notes[c];
+  const reg=$("mc-regime");
+  if(c===32)reg.innerHTML='<span class="regime mem">pinned at the DRAM ceiling</span>';
+  else if(c===64)reg.innerHTML='<span class="regime other">past the knee — regression</span>';
+  else reg.innerHTML='<span class="regime trans">below the ceiling — add cores</span>';
+  lineChart($("mc-chart"),["1","2","8","32","64"],MC.order.map(x=>MC.data[x].bw),
+    {ceiling:195,ceilLabel:"~195 GB/s DRAM ceiling",sel:MC.order.indexOf(c),
+     labels:MC.order.map(x=>MC.data[x].t+" µs"),ymax:232,color:"var(--teal)",w:420,h:230});
+}
+
+/* ============================== slide 4 · lesson 05 sim ============================== */
+const L05_N=8,L05_LAT=3;let l05block=1;const l05res={};
+function buildL05(){
+  const B=l05block;
+  const cba=newCB(2*B),cbb=newCB(2*B),cbout=newCB(2*B);
+  const srcA=Array.from({length:L05_N},()=>({state:"idle"}));
+  const srcB=Array.from({length:L05_N},()=>({state:"idle"}));
+  const dstArr=Array.from({length:L05_N},()=>({state:"empty"}));
+  const dstRegs={slots:Array.from({length:8},()=>null),holder:"free"};
+  const noc={reads:[],writes:[]};
+  const tickHook=()=>{
+    for(const q of [noc.reads,noc.writes]){
+      for(const o of q)o.c--;
+      for(let i=q.length-1;i>=0;i--)if(q[i].c<=0){q[i].done();q.splice(i,1);}
+    }
+  };
+  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",i:0,t:0,pc:0,done:false,blocked:null,
+    status:k=>"i = "+k.i,
+    lines:[
+"for (uint32_t i = start; i < end; i += block) {  // block = "+B,
+"    cb_reserve_back(cb_a, block);",
+"    cb_reserve_back(cb_b, block);",
+"    const uint32_t base_a = get_write_ptr(cb_a); // once",
+"    const uint32_t base_b = get_write_ptr(cb_b);",
+"    for (uint32_t t = 0; t < block; t++) {",
+"        noc_async_read_page(i + t, a, base_a + t * tile_bytes);",
+"        noc_async_read_page(i + t, b, base_b + t * tile_bytes);",
+"    }",
+"    noc_async_read_barrier(); // ONE wait, 2×block in flight",
+"    cb_push_back(cb_a, block);",
+"    cb_push_back(cb_b, block);",
+"}"],
+    program:[
+      {line:1,run:()=>cbReserve(cba,B)},
+      {line:2,run:()=>cbReserve(cbb,B)},
+      {line:3,run:k=>{k.t=0;return null;}},
+      {line:6,run:k=>{
+        const idx=k.i+k.t;
+        const pa=pageAt(cba,cba.wrPush+k.t),pb=pageAt(cbb,cbb.wrPush+k.t);
+        pa.state="filling";pa.tile=idx;pb.state="filling";pb.tile=idx;
+        srcA[idx].state="reading";srcB[idx].state="reading";
+        noc.reads.push({c:L05_LAT,done:()=>{pa.state="full";srcA[idx].state="read";}});
+        noc.reads.push({c:L05_LAT,done:()=>{pb.state="full";srcB[idx].state="read";}});
+        k.t++;return k.t<B?{stay:true}:null;}},
+      {line:9,run:()=>noc.reads.length?{blocked:"read barrier — "+noc.reads.length+" read(s) still in flight"}:null},
+      {line:10,run:()=>cbPush(cba,B)},
+      {line:11,run:()=>cbPush(cbb,B)},
+      {line:0,run:k=>{k.i+=B;if(k.i<L05_N){k.pc=0;return{jumped:true};}k.done=true;return{jumped:true};}}
+    ]};
+  const compute={name:"compute.cpp",proc:"TRISC 0·1·2",color:"violet",i:0,t:0,pc:0,done:false,blocked:null,
+    status:k=>"i = "+k.i,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i += block) {",
+"    cb_wait_front(cb_a, block);",
+"    cb_wait_front(cb_b, block);",
+"    cb_reserve_back(cb_out, block);",
+"    tile_regs_acquire();  // ONE handshake per block",
+"    for (uint32_t t = 0; t < block; t++)",
+"        add_tiles(cb_a, cb_b, t, t, t); // CB idx t, DST slot t",
+"    tile_regs_commit();",
+"    tile_regs_wait();",
+"    for (uint32_t t = 0; t < block; t++)",
+"        pack_tile(t, cb_out);",
+"    tile_regs_release();",
+"    cb_push_back(cb_out, block);",
+"    cb_pop_front(cb_a, block);",
+"    cb_pop_front(cb_b, block);",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cba,B)},
+      {line:2,run:()=>cbWait(cbb,B)},
+      {line:3,run:()=>cbReserve(cbout,B)},
+      {line:4,run:k=>{dstRegs.holder="math";dstRegs.slots=Array.from({length:8},()=>null);k.t=0;return null;}},
+      {line:6,run:k=>{dstRegs.slots[k.t]={t:k.i+k.t};k.t++;return k.t<B?{stay:true}:null;}},
+      {line:7,run:()=>{dstRegs.holder="committed";return null;}},
+      {line:8,run:k=>{dstRegs.holder="pack";k.t=0;return null;}},
+      {line:10,run:k=>{const p=pageAt(cbout,cbout.wrPush+k.t);p.tile=k.i+k.t;p.state="full";k.t++;return k.t<B?{stay:true}:null;}},
+      {line:11,run:()=>{dstRegs.holder="free";return null;}},
+      {line:12,run:()=>cbPush(cbout,B)},
+      {line:13,run:()=>cbPop(cba,B)},
+      {line:14,run:()=>cbPop(cbb,B)},
+      {line:0,run:k=>{k.i+=B;if(k.i<L05_N){k.pc=0;return{jumped:true};}k.done=true;return{jumped:true};}}
+    ]};
+  const writer={name:"writer.cpp (provided)",proc:"BRISC",color:"amber",i:0,t:0,pc:0,done:false,blocked:null,
+    status:k=>"i = "+k.i,
+    lines:[
+"for (uint32_t i = start; i < end; i += block) {",
+"    cb_wait_front(cb_in, block);",
+"    const uint32_t base = get_read_ptr(cb_in);",
+"    for (uint32_t t = 0; t < block; t++)",
+"        noc_async_write_page(i + t, dst, base + t * tile_bytes);",
+"    noc_async_write_barrier(); // drains all block writes",
+"    cb_pop_front(cb_in, block);",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cbout,B)},
+      {line:2,run:k=>{k.t=0;return null;}},
+      {line:4,run:k=>{
+        const idx=k.i+k.t,p=pageAt(cbout,cbout.rd+k.t);
+        p.state="draining";dstArr[idx]={state:"writing",val:p.tile};
+        noc.writes.push({c:L05_LAT,done:()=>{dstArr[idx].state="written";}});
+        k.t++;return k.t<B?{stay:true}:null;}},
+      {line:5,run:()=>noc.writes.length?{blocked:"write barrier — "+noc.writes.length+" write(s) still in flight"}:null},
+      {line:6,run:()=>cbPop(cbout,B)},
+      {line:0,run:k=>{k.i+=B;if(k.i<L05_N){k.pc=0;return{jumped:true};}k.done=true;return{jumped:true};}}
+    ]};
+  return {kernels:[reader,compute,writer],cba,cbb,cbout,srcA,srcB,dstArr,dstRegs,noc,tickHook};
+}
+function renderL05(sim){
+  const s=sim.state;
+  $("l05-rp").innerHTML=paneHTML(sim.kernels[0]);
+  $("l05-cp").innerHTML=paneHTML(sim.kernels[1]);
+  $("l05-wp").innerHTML=paneHTML(sim.kernels[2]);
+  drawRing("l05-ra",s.cba);drawRing("l05-rb",s.cbb);drawRing("l05-rout",s.cbout);
+  $("l05-ta").innerHTML="pushed "+s.cba.pushed+" · popped "+s.cba.popped;
+  $("l05-tb").innerHTML="pushed "+s.cbb.pushed+" · popped "+s.cbb.popped;
+  $("l05-tout").innerHTML="pushed "+s.cbout.pushed+" · popped "+s.cbout.popped;
+  $("l05-srcA").innerHTML=stripHTML(s.srcA);
+  $("l05-srcB").innerHTML=stripHTML(s.srcB);
+  $("l05-dst").innerHTML=stripHTML(s.dstArr);
+  $("l05-dst8").innerHTML=s.dstRegs.slots.map((sl,i)=>
+    '<div class="dsts'+(sl?" on":"")+'" title="dst['+i+']">'+(sl?sl.t:i)+"</div>").join("");
+  const h=$("l05-holder");
+  h.textContent={free:"DST: free",math:"DST: MATH holds",committed:"DST: committed",pack:"DST: PACK holds"}[s.dstRegs.holder];
+  h.className="holder "+(s.dstRegs.holder==="free"?"":s.dstRegs.holder);
+  const fl=s.noc.reads.length+s.noc.writes.length;
+  const fb=$("l05-flight");fb.textContent="NoC in flight: "+fl;fb.className="flight"+(fl?" on":"");
+  $("l05-tick").textContent=sim.tick;
+  $("l05-hang").className="hangbar"+(sim.hang?" on":"");
+  if(sim.hang)$("l05-hang").innerHTML=hangHTML();
+  const ok=!sim.running&&!sim.hang;
+  $("l05-done").className="donebar"+(ok?" on":"");
+  if(ok)$("l05-done").innerHTML="✓ 8 tiles through in <b>"+sim.tick+"</b> cycles at block "+l05block
+    +". On silicon the same change measures 170 → 64.6 µs across blocks 1 → 8 — <b>2.6×</b> with identical hardware and arithmetic.";
+  const parts=[];
+  if(l05res[1]!==undefined)parts.push("block 1 → <b>"+l05res[1]+"</b> cycles");
+  if(l05res[4]!==undefined)parts.push("block 4 → <b>"+l05res[4]+"</b> cycles");
+  $("l05-res").innerHTML=parts.join(" · ")+(parts.length===2?" <span class='g'>✓ compare</span>":"");
+}
+const l05=new Sim("l05",buildL05,renderL05);
+l05.onDone=s=>{l05res[l05block]=s.tick;};
+
+/* ============================== slide 5 · lesson 06 matmul sim ============================== */
+const MM={Mt:2,Kt:3,Nt:2};
+function buildMM(){
+  const {Mt,Kt,Nt}=MM;
+  const cba=newCB(2),cbb=newCB(2),cbout=newCB(Mt*Nt);
+  const aT=Array.from({length:Mt*Kt},()=>({count:0}));
+  const bT=Array.from({length:Kt*Nt},()=>({count:0}));
+  const cT=Array.from({length:Mt*Nt},()=>"empty");
+  const acc={terms:0,holder:"free",mt:0,nt:0};
+  const st={kernels:null,cba,cbb,cbout,aT,bT,cT,acc,lastA:-1,lastB:-1};
+  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",mt:0,nt:0,kt:0,pc:0,done:false,blocked:null,
+    status:k=>"mt="+k.mt+" nt="+k.nt+" kt="+k.kt,
+    lines:[
+"for (uint32_t mt = 0; mt < Mt; mt++)",
+"  for (uint32_t nt = 0; nt < Nt; nt++)",
+"    for (uint32_t kt = 0; kt < Kt; kt++) {",
+"      cb_reserve_back(cb_a, 1);",
+"      cb_reserve_back(cb_b, 1);",
+"      // A row mt: page mt*Kt + kt",
+"      noc_async_read_page(mt*Kt + kt, a, get_write_ptr(cb_a));",
+"      // B col nt: page kt*Nt + nt — stride Nt",
+"      noc_async_read_page(kt*Nt + nt, b, get_write_ptr(cb_b));",
+"      noc_async_read_barrier();",
+"      cb_push_back(cb_a, 1);",
+"      cb_push_back(cb_b, 1);",
+"    }"],
+    program:[
+      {line:3,run:()=>cbReserve(cba,1)},
+      {line:4,run:()=>cbReserve(cbb,1)},
+      {line:6,run:k=>{const idx=k.mt*Kt+k.kt;aT[idx].count++;st.lastA=idx;
+        const p=pageAt(cba,cba.wrPush);p.state="full";p.tile=idx;return null;}},
+      {line:8,run:k=>{const idx=k.kt*Nt+k.nt;bT[idx].count++;st.lastB=idx;
+        const p=pageAt(cbb,cbb.wrPush);p.state="full";p.tile=idx;return null;}},
+      {line:9,run:()=>null},
+      {line:10,run:()=>cbPush(cba,1)},
+      {line:11,run:()=>cbPush(cbb,1)},
+      {line:2,run:k=>{k.kt++;
+        if(k.kt>=Kt){k.kt=0;k.nt++;if(k.nt>=Nt){k.nt=0;k.mt++;}}
+        if(k.mt<Mt){k.pc=0;return{jumped:true};}
+        k.done=true;st.lastA=-1;st.lastB=-1;return{jumped:true};}}
+    ]};
+  const compute={name:"compute.cpp",proc:"TRISC 0·1·2 · FPU",color:"violet",mt:0,nt:0,kt:0,pc:0,done:false,blocked:null,
+    status:k=>"C["+k.mt+"]["+k.nt+"] · k="+k.kt,
+    lines:[
+"compute_kernel_hw_startup<SrcOrder::Reverse>(cb_a, cb_b, cb_out);",
+"matmul_init(cb_a, cb_b);",
+"for (uint32_t mt = 0; mt < Mt; mt++)",
+"  for (uint32_t nt = 0; nt < Nt; nt++) {",
+"    tile_regs_acquire();               // DST[0] = 0",
+"    for (uint32_t kt = 0; kt < Kt; kt++) {",
+"      cb_wait_front(cb_a, 1);",
+"      cb_wait_front(cb_b, 1);",
+"      matmul_tiles(cb_a, cb_b, 0, 0, 0); // DST[0] += A @ B",
+"      cb_pop_front(cb_a, 1);",
+"      cb_pop_front(cb_b, 1);",
+"    }",
+"    tile_regs_commit();",
+"    cb_reserve_back(cb_out, 1);",
+"    tile_regs_wait();",
+"    pack_tile(0, cb_out);   // ONCE — after the K loop",
+"    tile_regs_release();",
+"    cb_push_back(cb_out, 1);",
+"  }"],
+    program:[
+      {line:0,run:()=>null},
+      {line:1,run:()=>null},
+      {line:4,run:k=>{acc.terms=0;acc.holder="math";acc.mt=k.mt;acc.nt=k.nt;return null;}},
+      {line:6,run:()=>cbWait(cba,1)},
+      {line:7,run:()=>cbWait(cbb,1)},
+      {line:8,run:()=>{acc.terms++;return null;}},
+      {line:9,run:()=>cbPop(cba,1)},
+      {line:10,run:()=>cbPop(cbb,1)},
+      {line:5,run:k=>{k.kt++;if(k.kt<Kt){k.pc=3;return{jumped:true};}k.kt=0;return null;}},
+      {line:12,run:()=>{acc.holder="committed";return null;}},
+      {line:13,run:()=>cbReserve(cbout,1)},
+      {line:14,run:()=>{acc.holder="pack";return null;}},
+      {line:15,run:k=>{const p=pageAt(cbout,cbout.wrPush);p.state="full";p.tile="C";
+        cT[k.mt*Nt+k.nt]="written";return null;}},
+      {line:16,run:()=>{acc.holder="free";return null;}},
+      {line:17,run:()=>cbPush(cbout,1)},
+      {line:3,run:k=>{k.nt++;if(k.nt>=Nt){k.nt=0;k.mt++;}
+        if(k.mt<Mt){k.pc=2;return{jumped:true};}k.done=true;return{jumped:true};}}
+    ]};
+  st.kernels=[reader,compute];
+  return st;
+}
+function renderMM(sim){
+  const s=sim.state,{Mt,Kt,Nt}=MM;
+  $("mm-rp").innerHTML=paneHTML(sim.kernels[0]);
+  $("mm-cp").innerHTML=paneHTML(sim.kernels[1]);
+  drawRing("mm-ca",s.cba,{noCenter:true,noPtr:true});
+  drawRing("mm-cb",s.cbb,{noCenter:true,noPtr:true});
+  $("mm-a").innerHTML=s.aT.map((t,i)=>
+    '<div class="tile '+(i===s.lastA?"t-reading":t.count?"t-read":"t-empty")+'" title="A tile '+i+", read "+t.count+' times">'+(t.count||"·")+"</div>").join("");
+  $("mm-b").innerHTML=s.bT.map((t,i)=>
+    '<div class="tile '+(i===s.lastB?"t-reading":t.count?"t-read":"t-empty")+'" title="B tile '+i+", read "+t.count+' times">'+(t.count||"·")+"</div>").join("");
+  $("mm-c").innerHTML=s.cT.map((cs,i)=>
+    '<div class="tile vio '+(cs==="written"?"t-written":"t-empty")+'">'+(cs==="written"?"C":"·")+"</div>").join("");
+  const a=s.acc;
+  $("mm-acc").innerHTML=a.holder==="free"?"DST[0] — released"
+    :"<b>DST[0]</b> = Σ<sub>k&lt;"+a.terms+"</sub> A["+a.mt+",k]·B[k,"+a.nt+"] &nbsp;·&nbsp; k = "+a.terms+"/"+Kt;
+  const h=$("mm-holder");
+  h.textContent={free:"DST: free",math:"DST: MATH accumulating",committed:"DST: committed",pack:"DST: PACK holds"}[a.holder];
+  h.className="holder "+(a.holder==="free"?"":a.holder==="math"?"math":a.holder);
+  const ar=s.aT.reduce((x,t)=>x+t.count,0),br=s.bT.reduce((x,t)=>x+t.count,0);
+  $("mm-reads").innerHTML="fetched: A <b>"+ar+"</b>/"+(Mt*Kt)+" · B <b>"+br+"</b>/"+(Kt*Nt);
+  $("mm-tick").textContent=sim.tick;
+  $("mm-hang").className="hangbar"+(sim.hang?" on":"");
+  if(sim.hang)$("mm-hang").innerHTML=hangHTML();
+  const ok=!sim.running&&!sim.hang;
+  $("mm-done").className="donebar"+(ok?" on":"");
+  if(ok)$("mm-done").innerHTML="✓ C computed — each output tile accumulated "+Kt+" matmuls in DST[0] and packed once. "
+    +"But look at the counters: A fetched <b>"+ar+"</b> tiles (A holds "+(Mt*Kt)+"), B fetched <b>"+br+"</b> (B holds "+(Kt*Nt)
+    +") — every input crossed the NoC "+(ar/(Mt*Kt))+"×. At Mt=Nt=64, Kt=8 that's 65536 reads for 1024 tiles of data, <b>64× redundant</b>. Lesson 07 fixes it.";
+}
+const mm=new Sim("mm",buildMM,renderMM);
+
+/* ============================== slide 6 · lesson 07 ============================== */
+const T7={cur:64,order:[1,8,32,64],
+  data:{1:{t:"2025",bw:19,tf:"0.53"},8:{t:"275",bw:141,tf:"3.9"},32:{t:"201",bw:193,tf:"5.3"},64:{t:"207",bw:187,tf:"5.2"}}};
+function t7Render(){
+  const d=T7.data[T7.cur];
+  $("t7-time").textContent=d.t;$("t7-bw").textContent=d.bw;$("t7-tf").textContent=d.tf;
+  lineChart($("t7-chart"),["1","8","32","64"],T7.order.map(x=>T7.data[x].bw),
+    {ceiling:195,ceilLabel:"~195 GB/s DRAM ceiling",sel:T7.order.indexOf(T7.cur),
+     labels:T7.order.map(x=>T7.data[x].tf+" TF/s"),ymax:232,color:"var(--violet)",w:420,h:200});
+}
+staticPane($("t7-pane"),"compute.cpp — A-row reuse","TRISC 0·1·2","violet",[
+"for (uint32_t m = 0; m < n_rows; m++) {",
+"    cb_wait_front(cb_a, Kt);   // A's row: resident, NOT popped",
+"    for (uint32_t nt = 0; nt < Nt; nt++) {",
+"        cb_wait_front(cb_b, Kt);",
+"        tile_regs_acquire();",
+"        for (uint32_t kt = 0; kt < Kt; kt++)",
+"            matmul_tiles(cb_a, cb_b, kt, kt, 0); // window idx kt",
+"        tile_regs_commit();",
+"        cb_reserve_back(cb_out, 1);",
+"        tile_regs_wait();",
+"        pack_tile(0, cb_out);",
+"        tile_regs_release();",
+"        cb_push_back(cb_out, 1);",
+"        cb_pop_front(cb_b, Kt);   // B: consumed per column",
+"    }",
+"    cb_pop_front(cb_a, Kt);       // A: released only now",
+"}"],[1,13,15]);
+
+/* ============================== slide 7 · lesson 08 ============================== */
+const T8={cur:1,order:[1,2,4,8],
+  data:{1:{t:394,mib:74,bw:197,tf:"5.4"},2:{t:222,mib:42,bw:198,tf:"9.7"},
+        4:{t:165,mib:26,bw:165,tf:"13.0"},8:{t:160,mib:18,bw:118,tf:"13.4"}},
+  notes:{1:"Lesson 07's kernel, as a baseline. Bandwidth pinned at ~197 GB/s and time tracking traffic exactly: textbook memory-bound.",
+    2:"Traffic halves → time halves (394 → 222 µs), bandwidth doesn't move off the ceiling. The lever is working exactly as the theory says: halve the bytes, halve the time.",
+    4:"The transition. Traffic drops 38% but time only drops 26%, and bandwidth falls OFF the ceiling to 165 GB/s. DRAM is no longer the constraint — you've stopped being able to keep it busy.",
+    8:"Traffic drops another 30%… and time improves 3%. Bandwidth collapses to 118 GB/s. Halving the memory traffic bought essentially nothing: memory is no longer what you're waiting on. So what is? Next slide."}};
+function t8Render(){
+  const mb=T8.cur,d=T8.data[mb];
+  $("t8-time").textContent=d.t;$("t8-traffic").textContent=d.mib;
+  $("t8-bw").textContent=d.bw;$("t8-tput").textContent=d.tf;
+  $("t8-note").textContent=T8.notes[mb];
+  const stEl=$("t8-status");
+  if(mb<=2){stEl.className="regime mem";stEl.textContent="memory-bound — pinned at the ceiling";}
+  else if(mb===4){stEl.className="regime trans";stEl.textContent="transition — off the ceiling";}
+  else{stEl.className="regime other";stEl.textContent="not memory-bound any more";}
+  let rows="";
+  for(let m=0;m<mb;m++)rows+='<div class="mbrow">'+'<span class="mq a"></span>'.repeat(4)+"</div>";
+  let bcol="";for(let k=0;k<4;k++)bcol+='<div class="mbrow"><span class="mq b"></span></div>';
+  let ccol="";for(let m=0;m<mb;m++)ccol+='<div class="mbrow"><span class="mq c"></span></div>';
+  $("t8-diag").innerHTML=
+    '<div class="mbcol">'+rows+'<span class="mblbl">A · Mb='+mb+" rows × Kt<br>resident in L1</span></div>"
+    +'<span class="mbarrow">×</span>'
+    +'<div class="mbcol">'+bcol+'<span class="mblbl">ONE read of<br>B’s column</span></div>'
+    +'<span class="mbarrow">→</span>'
+    +'<div class="mbcol">'+ccol+'<span class="mblbl">'+mb+" output tile"+(mb>1?"s":"")+"<br>DST slot m</span></div>";
+  lineChart($("t8-chartbw"),["Mb=1","2","4","8"],T8.order.map(x=>T8.data[x].bw),
+    {ceiling:195,ceilLabel:"ceiling",sel:T8.order.indexOf(mb),ymax:232,color:"var(--teal)",w:380,h:170,
+     labels:T8.order.map(x=>T8.data[x].bw+"")});
+  lineChart($("t8-chartt"),["Mb=1","2","4","8"],T8.order.map(x=>T8.data[x].t),
+    {sel:T8.order.indexOf(mb),ymax:440,color:"var(--amber)",w:380,h:170,
+     labels:T8.order.map(x=>T8.data[x].t+" µs")});
+}
+
+/* ============================== slide 8 · fidelity refutation ============================== */
+const FX={mode:"naive",
+  meas:{HiFi4:"159.8",HiFi2:"156.1",LoFi:"155.9"},
+  naive:{HiFi4:"159.8",HiFi2:"79.9",LoFi:"40.0"},
+  passes:{HiFi4:4,HiFi2:2,LoFi:1}};
+function fxRender(){
+  const src=FX.mode==="naive"?FX.naive:FX.meas;
+  const scale=170;
+  $("fx-bars").innerHTML=["HiFi4","HiFi2","LoFi"].map(f=>{
+    const v=parseFloat(src[f]),pred=FX.mode==="naive"&&f!=="HiFi4";
+    return '<div class="fbar"><span>'+f+" · "+FX.passes[f]+"p</span>"
+      +'<div class="lane"><div class="bar" style="width:'+(v/scale*100).toFixed(1)+'%'
+      +(pred?";opacity:.55;border:1px dashed var(--violet);background:color-mix(in srgb,var(--violet) 30%,transparent)":"")+'"></div></div>'
+      +'<span class="tv"><b>'+src[f]+" µs</b>"+(pred?" <span style='color:var(--faint)'>(pred.)</span>":"")+"</span></div>";
+  }).join("");
+  $("fx-cap").innerHTML=FX.mode==="naive"
+    ?"<b>Prediction, not a measurement:</b> if the kernel were FPU-bound, time would scale with mantissa passes — HiFi2 halves it, LoFi quarters it."
+    :"<b>Measured</b> (Mb=8, 16 cores): 159.8 / 156.1 / 155.9 µs. A 4× cut in math passes buys ~2%. The FPU is not the limit.";
+}
+
+/* ============================== wiring ============================== */
+wireSim(l05,"l05");wireSim(mm,"mm");
+document.querySelectorAll("button[data-m]").forEach(b=>{
+  b.onclick=()=>{LAT.mode=b.dataset.m==="serial"?"serial":"over";
+    document.querySelectorAll("button[data-m]").forEach(x=>x.classList.toggle("on",x===b));latDraw();};
+});
+document.querySelectorAll("button[data-n]").forEach(b=>{
+  b.onclick=()=>{LAT.n=+b.dataset.n;
+    document.querySelectorAll("button[data-n]").forEach(x=>x.classList.toggle("on",x===b));latDraw();};
+});
+document.querySelectorAll("button[data-c]").forEach(b=>{
+  b.onclick=()=>{MC.cur=+b.dataset.c;
+    document.querySelectorAll("button[data-c]").forEach(x=>x.classList.toggle("on",x===b));mcRender();};
+});
+document.querySelectorAll("button[data-b]").forEach(b=>{
+  b.onclick=()=>{l05block=+b.dataset.b;
+    document.querySelectorAll("button[data-b]").forEach(x=>x.classList.toggle("on",x===b));l05.reset();};
+});
+document.querySelectorAll("button[data-tc]").forEach(b=>{
+  b.onclick=()=>{T7.cur=+b.dataset.tc;
+    document.querySelectorAll("button[data-tc]").forEach(x=>x.classList.toggle("on",x===b));t7Render();};
+});
+document.querySelectorAll("button[data-mb]").forEach(b=>{
+  b.onclick=()=>{T8.cur=+b.dataset.mb;
+    document.querySelectorAll("button[data-mb]").forEach(x=>x.classList.toggle("on",x===b));t8Render();};
+});
+document.querySelectorAll("button[data-fx]").forEach(b=>{
+  b.onclick=()=>{FX.mode=b.dataset.fx==="naive"?"naive":"meas";
+    document.querySelectorAll("button[data-fx]").forEach(x=>x.classList.toggle("on",x===b));fxRender();};
+});
+latDraw();mcRender();t7Render();t8Render();fxRender();
+lineChart($("l05-chart"),["block 1","2","4","8"],[74,115,166,195],
+  {ceiling:195,ceilLabel:"~195 GB/s ceiling",ymax:232,color:"var(--teal)",w:400,h:180,
+   labels:["170 µs","109","75.8","64.6"]});
+[l05,mm].forEach(s=>s.render());
+</script>
+</body>
+</html>
