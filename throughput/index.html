@@ -487,16 +487,40 @@ matmul_init(cb_a, cb_b);   // NOT binary_op_init_common</pre>
   <p class="lede">Lesson 06 reads <code>2·Mt·Nt·Kt</code> tiles to touch <code>Mt·Kt + Kt·Nt</code>
   of data — at 64×64×8 that is <b>65536 reads for 1024 tiles: 64× redundant</b>. The fix costs one
   moved line: keep A's row resident (<code>cb_wait_front(cb_a, Kt)</code> once, pop <em>after</em>
-  the column loop) and stream only B. Then give each core a range of rows. Measured at
-  Mt=64, Kt=8, Nt=32:</p>
-  <div class="twocol">
-    <div>
-      <div class="pane violetside" id="t7-pane"></div>
-      <p style="color:var(--muted);font-size:13px;margin-top:10px">Traffic drops from
-      <code>2·Mt·Nt·Kt</code> to <code>Mt·Kt + Mt·Nt·Kt</code> — B is still re-read per row.
-      Lesson 08 fixes that dimension too.</p>
+  the column loop) and stream only B. Then give each core a range of rows. Step the same tiny
+  <b>Mt=2, Kt=3, Nt=2</b> problem as lesson 06 and watch the A counters: they stop at 1.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="m7-step">⏵ step</button>
+    <button class="ctl" id="m7-play">▶ play</button>
+    <button class="ctl" id="m7-reset">↺ reset</button>
+    <span class="sp"></span>
+    <span class="tickbox" id="m7-reads"></span>
+    <span class="tickbox">cycle <b id="m7-tick">0</b></span>
+  </div>
+  <div class="hangbar" id="m7-hang"></div>
+  <div class="donebar" id="m7-done"></div>
+  <div class="simgrid">
+    <div class="pane" id="m7-rp"></div>
+    <div class="vizcol">
+      <div style="display:flex;gap:22px;align-items:flex-start;justify-content:center">
+        <div><div class="striplbl">A · Mt×Kt (reads)</div><div class="mmgrid" id="m7-a" style="grid-template-columns:repeat(3,30px)"></div></div>
+        <div><div class="striplbl">B · Kt×Nt (reads)</div><div class="mmgrid" id="m7-b" style="grid-template-columns:repeat(2,30px)"></div></div>
+      </div>
+      <div style="display:flex;gap:14px;align-items:center">
+        <div class="vizcol"><svg class="ring" id="m7-ca" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap" id="m7-calbl">cb_a · Kt pages</div></div>
+        <div class="vizcol"><svg class="ring" id="m7-cb" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap">cb_b · 2·Kt pages</div></div>
+      </div>
+      <div class="accbox" id="m7-acc"></div>
+      <div class="holder" id="m7-holder">DST: free</div>
+      <div><div class="striplbl">C · Mt×Nt output</div><div class="mmgrid" id="m7-c" style="grid-template-columns:repeat(2,30px)"></div></div>
     </div>
+    <div class="pane violetside" id="m7-cp"></div>
+  </div>
+  <div class="twocol" style="margin-top:20px">
     <div>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 8px">Traffic drops from
+      <code>2·Mt·Nt·Kt</code> to <code>Mt·Kt + Mt·Nt·Kt</code> — B is still re-read per row;
+      lesson 08 fixes that dimension too. Measured at Mt=64, Kt=8, Nt=32, sweeping cores:</p>
       <div class="simbar" style="margin-top:0">
         <span class="optgrp">cores (HiFi4)
           <button data-tc="1">1</button><button data-tc="8">8</button>
@@ -509,7 +533,9 @@ matmul_init(cb_a, cb_b);   // NOT binary_op_init_common</pre>
         <span class="stat"><span class="k">bandwidth</span><span class="v" id="t7-bw"></span><span class="u">GB/s</span></span>
         <span class="stat"><span class="k">throughput</span><span class="v" id="t7-tf"></span><span class="u">TFLOP/s</span></span>
       </div>
-      <div class="panelbox" style="margin-top:8px">
+    </div>
+    <div>
+      <div class="panelbox">
         <div class="striplbl" style="text-align:left">the surprise · fidelity sweep at 64 cores</div>
         <table class="opstable" style="margin-top:6px">
           <tr><th>fidelity</th><th>math passes</th><th>measured time</th></tr>
@@ -1200,24 +1226,123 @@ function t7Render(){
     {ceiling:195,ceilLabel:"~195 GB/s DRAM ceiling",sel:T7.order.indexOf(T7.cur),
      labels:T7.order.map(x=>T7.data[x].tf+" TF/s"),ymax:232,color:"var(--violet)",w:420,h:200});
 }
-staticPane($("t7-pane"),"compute.cpp — A-row reuse","TRISC 0·1·2","violet",[
+/* lesson 07 tuned matmul stepper — same tiny problem as lesson 06 */
+function buildM7(){
+  const {Mt,Kt,Nt}=MM;
+  const cba=newCB(Kt),cbb=newCB(2*Kt),cbout=newCB(Mt*Nt);
+  const aT=Array.from({length:Mt*Kt},()=>({count:0}));
+  const bT=Array.from({length:Kt*Nt},()=>({count:0}));
+  const cT=Array.from({length:Mt*Nt},()=>"empty");
+  const acc={terms:0,holder:"free",mt:0,nt:0};
+  const st={kernels:null,cba,cbb,cbout,aT,bT,cT,acc,lastA:-1,lastB:-1};
+  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",mt:0,nt:0,kt:0,pc:0,done:false,blocked:null,
+    status:k=>"mt="+k.mt+" nt="+k.nt+" kt="+k.kt,
+    lines:[
+"for (uint32_t mt = 0; mt < Mt; mt++) {",
+"  // A's row: read ONCE, reused across all Nt columns",
+"  cb_reserve_back(cb_a, Kt);",
+"  for (uint32_t kt = 0; kt < Kt; kt++)",
+"    noc_async_read_page(mt*Kt + kt, a, base_a + kt*tb);",
+"  noc_async_read_barrier();",
+"  cb_push_back(cb_a, Kt);",
+"  for (uint32_t nt = 0; nt < Nt; nt++) {",
+"    cb_reserve_back(cb_b, Kt);  // B: still per row×column",
+"    for (uint32_t kt = 0; kt < Kt; kt++)",
+"      noc_async_read_page(kt*Nt + nt, b, base_b + kt*tb);",
+"    noc_async_read_barrier();",
+"    cb_push_back(cb_b, Kt);",
+"  }",
+"}"],
+    program:[
+      {line:2,run:()=>cbReserve(cba,Kt)},
+      {line:4,run:k=>{const idx=k.mt*Kt+k.kt;aT[idx].count++;st.lastA=idx;
+        const p=pageAt(cba,cba.wrPush+k.kt);p.state="full";p.tile=idx;
+        k.kt++;if(k.kt<Kt)return{stay:true};k.kt=0;return null;}},
+      {line:5,run:()=>{st.lastA=-1;return null;}},
+      {line:6,run:()=>cbPush(cba,Kt)},
+      {line:8,run:()=>cbReserve(cbb,Kt)},
+      {line:10,run:k=>{const idx=k.kt*Nt+k.nt;bT[idx].count++;st.lastB=idx;
+        const p=pageAt(cbb,cbb.wrPush+k.kt);p.state="full";p.tile=idx;
+        k.kt++;if(k.kt<Kt)return{stay:true};k.kt=0;return null;}},
+      {line:11,run:()=>{st.lastB=-1;return null;}},
+      {line:12,run:()=>cbPush(cbb,Kt)},
+      {line:7,run:k=>{k.nt++;if(k.nt<Nt){k.pc=4;return{jumped:true};}k.nt=0;return null;}},
+      {line:0,run:k=>{k.mt++;if(k.mt<Mt){k.pc=0;return{jumped:true};}
+        k.done=true;return{jumped:true};}}
+    ]};
+  const compute={name:"compute.cpp",proc:"TRISC 0·1·2 · FPU",color:"violet",mt:0,nt:0,kt:0,pc:0,done:false,blocked:null,
+    status:k=>"C["+k.mt+"]["+k.nt+"] · k="+k.kt,
+    lines:[
 "for (uint32_t m = 0; m < n_rows; m++) {",
-"    cb_wait_front(cb_a, Kt);   // A's row: resident, NOT popped",
-"    for (uint32_t nt = 0; nt < Nt; nt++) {",
-"        cb_wait_front(cb_b, Kt);",
-"        tile_regs_acquire();",
-"        for (uint32_t kt = 0; kt < Kt; kt++)",
-"            matmul_tiles(cb_a, cb_b, kt, kt, 0); // window idx kt",
-"        tile_regs_commit();",
-"        cb_reserve_back(cb_out, 1);",
-"        tile_regs_wait();",
-"        pack_tile(0, cb_out);",
-"        tile_regs_release();",
-"        cb_push_back(cb_out, 1);",
-"        cb_pop_front(cb_b, Kt);   // B: consumed per column",
-"    }",
-"    cb_pop_front(cb_a, Kt);       // A: released only now",
-"}"],[1,13,15]);
+"  cb_wait_front(cb_a, Kt);   // row resident — NO pop yet",
+"  for (uint32_t nt = 0; nt < Nt; nt++) {",
+"    cb_wait_front(cb_b, Kt);",
+"    tile_regs_acquire();               // DST[0] = 0",
+"    for (uint32_t kt = 0; kt < Kt; kt++)",
+"      matmul_tiles(cb_a, cb_b, kt, kt, 0); // window idx kt",
+"    tile_regs_commit();",
+"    cb_reserve_back(cb_out, 1);",
+"    tile_regs_wait();",
+"    pack_tile(0, cb_out);",
+"    tile_regs_release();",
+"    cb_push_back(cb_out, 1);",
+"    cb_pop_front(cb_b, Kt);   // B: dropped per column",
+"  }",
+"  cb_pop_front(cb_a, Kt);     // A: released only NOW",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cba,Kt)},
+      {line:3,run:()=>cbWait(cbb,Kt)},
+      {line:4,run:k=>{acc.terms=0;acc.holder="math";acc.mt=k.mt;acc.nt=k.nt;return null;}},
+      {line:6,run:k=>{acc.terms++;k.kt++;if(k.kt<Kt)return{stay:true};k.kt=0;return null;}},
+      {line:7,run:()=>{acc.holder="committed";return null;}},
+      {line:8,run:()=>cbReserve(cbout,1)},
+      {line:9,run:()=>{acc.holder="pack";return null;}},
+      {line:10,run:k=>{const p=pageAt(cbout,cbout.wrPush);p.state="full";p.tile="C";
+        cT[k.mt*Nt+k.nt]="written";return null;}},
+      {line:11,run:()=>{acc.holder="free";return null;}},
+      {line:12,run:()=>cbPush(cbout,1)},
+      {line:13,run:()=>cbPop(cbb,Kt)},
+      {line:2,run:k=>{k.nt++;if(k.nt<Nt){k.pc=1;return{jumped:true};}k.nt=0;return null;}},
+      {line:15,run:()=>cbPop(cba,Kt)},
+      {line:0,run:k=>{k.mt++;if(k.mt<Mt){k.pc=0;return{jumped:true};}k.done=true;return{jumped:true};}}
+    ]};
+  st.kernels=[reader,compute];
+  return st;
+}
+function renderM7(sim){
+  const s=sim.state,{Mt,Kt,Nt}=MM;
+  $("m7-rp").innerHTML=paneHTML(sim.kernels[0]);
+  $("m7-cp").innerHTML=paneHTML(sim.kernels[1]);
+  drawRing("m7-ca",s.cba,{noCenter:true,noPtr:true});
+  drawRing("m7-cb",s.cbb,{noCenter:true,noPtr:true});
+  $("m7-calbl").textContent=s.cba.visible===Kt?"cb_a · row "+sim.kernels[1].mt+" resident":"cb_a · Kt pages";
+  $("m7-a").innerHTML=s.aT.map((t,i)=>
+    '<div class="tile '+(i===s.lastA?"t-reading":t.count?"t-read":"t-empty")+'" title="A tile '+i+", read "+t.count+' times">'+(t.count||"·")+"</div>").join("");
+  $("m7-b").innerHTML=s.bT.map((t,i)=>
+    '<div class="tile '+(i===s.lastB?"t-reading":t.count?"t-read":"t-empty")+'" title="B tile '+i+", read "+t.count+' times">'+(t.count||"·")+"</div>").join("");
+  $("m7-c").innerHTML=s.cT.map(cs=>
+    '<div class="tile vio '+(cs==="written"?"t-written":"t-empty")+'">'+(cs==="written"?"C":"·")+"</div>").join("");
+  const a=s.acc;
+  $("m7-acc").innerHTML=a.holder==="free"?"DST[0] — released"
+    :"<b>DST[0]</b> = Σ<sub>k&lt;"+a.terms+"</sub> A["+a.mt+",k]·B[k,"+a.nt+"] &nbsp;·&nbsp; k = "+a.terms+"/"+Kt;
+  const h=$("m7-holder");
+  h.textContent={free:"DST: free",math:"DST: MATH accumulating",committed:"DST: committed",pack:"DST: PACK holds"}[a.holder];
+  h.className="holder "+(a.holder==="free"?"":a.holder==="math"?"math":a.holder);
+  const ar=s.aT.reduce((x,t)=>x+t.count,0),br=s.bT.reduce((x,t)=>x+t.count,0);
+  $("m7-reads").innerHTML="fetched: A <b>"+ar+"</b>/"+(Mt*Kt)+" · B <b>"+br+"</b>/"+(Kt*Nt)
+    +' <span style="color:var(--faint)">(lesson 06: 12 · 12)</span>';
+  $("m7-tick").textContent=sim.tick;
+  $("m7-hang").className="hangbar"+(sim.hang?" on":"");
+  if(sim.hang)$("m7-hang").innerHTML=hangHTML();
+  const ok=!sim.running&&!sim.hang;
+  $("m7-done").className="donebar"+(ok?" on":"");
+  if(ok)$("m7-done").innerHTML="✓ same C from <b>"+(ar+br)+"</b> reads instead of lesson 06's 24: every A tile "
+    +"crossed the NoC exactly once (all counters 1), while B is still re-read once per row ("+(br/(Kt*Nt))
+    +"×). At Mt=64, Kt=8, Nt=32 that is 32768 → 16896 tile-reads; the measured curve below adds row-parallelism "
+    +"on top. B's per-row redundancy is what lesson 08 removes.";
+}
+const m7=new Sim("m7",buildM7,renderM7);
 
 /* ============================== slide 7 · lesson 08 ============================== */
 const T8={cur:1,order:[1,2,4,8],
@@ -1275,7 +1400,7 @@ function fxRender(){
 }
 
 /* ============================== wiring ============================== */
-wireSim(l05,"l05");wireSim(mm,"mm");
+wireSim(l05,"l05");wireSim(mm,"mm");wireSim(m7,"m7");
 document.querySelectorAll("button[data-m]").forEach(b=>{
   b.onclick=()=>{LAT.mode=b.dataset.m==="serial"?"serial":"over";
     document.querySelectorAll("button[data-m]").forEach(x=>x.classList.toggle("on",x===b));latDraw();};
@@ -1308,7 +1433,7 @@ latDraw();mcRender();t7Render();t8Render();fxRender();
 lineChart($("l05-chart"),["block 1","2","4","8"],[74,115,166,195],
   {ceiling:195,ceilLabel:"~195 GB/s ceiling",ymax:232,color:"var(--teal)",w:400,h:180,
    labels:["170 µs","109","75.8","64.6"]});
-[l05,mm].forEach(s=>s.render());
+[l05,mm,m7].forEach(s=>s.render());
 </script>
 </body>
 </html>
