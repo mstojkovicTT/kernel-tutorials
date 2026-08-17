@@ -266,6 +266,50 @@ blockquote.rule b{color:var(--teal)}
 .gonext{font-family:var(--mono);font-size:13px;background:var(--code-bg);border:1px solid var(--line);
   border-radius:8px;padding:14px 18px;line-height:2}
 .gonext .c{color:var(--faint)}
+
+/* ---------- journey (where everything lives) ---------- */
+.jrscene{display:flex;align-items:stretch;gap:0;min-width:960px;margin-top:6px}
+.jrmem{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;
+  display:flex;flex-direction:column;gap:10px;height:100%}
+.jrmem>.jrhd{font-family:var(--mono);font-size:12.5px;font-weight:700}
+.jrmem>.jrsub{font-size:11px;color:var(--muted);margin-top:-6px;max-width:24ch}
+.jrcore{border:1.5px dashed var(--faint);border-radius:16px;padding:24px 14px 12px;position:relative;
+  display:flex;align-items:stretch;gap:0;margin-left:4px}
+.jrcore::before{content:"one Tensix core";position:absolute;top:5px;left:16px;
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+.jrgap{display:flex;flex-direction:column;justify-content:space-around;gap:14px;padding:0 6px;min-width:128px}
+.jrhop{font-family:var(--mono);font-size:10.5px;color:var(--faint);text-align:center;line-height:1.5;
+  border:1px dashed transparent;border-radius:8px;padding:6px 4px;transition:color .2s}
+.jrhop code{font-size:10px;color:inherit}
+.jrhop.on{color:var(--teal);border-color:var(--teal);animation:nocblink .9s infinite}
+.jrhop.on.amb{color:var(--amber);border-color:var(--amber)}
+.jrhop.on.vio{color:var(--violet);border-color:var(--violet)}
+.jrstation{border:1px solid var(--line);border-radius:8px;padding:6px 9px;background:var(--panel2);
+  display:flex;align-items:center;gap:8px;min-height:40px;transition:box-shadow .2s,border-color .2s}
+.jrstation .jrsl{font-family:var(--mono);font-size:11px;color:var(--muted);white-space:nowrap}
+.jrstation .slot{min-width:26px;min-height:26px;display:flex;gap:4px}
+.jrstation.on{border-color:var(--teal);box-shadow:0 0 0 3px color-mix(in srgb,var(--teal) 22%,transparent)}
+.jrstation.on.vio{border-color:var(--violet);box-shadow:0 0 0 3px color-mix(in srgb,var(--violet) 22%,transparent)}
+.jrtok{width:26px;height:26px;border-radius:6px;background:var(--teal);color:var(--bg);
+  font-family:var(--mono);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;
+  animation:tokin .3s ease}
+.jrtok.vio{background:var(--violet)}
+.jrtok.dim{opacity:.32}
+@keyframes tokin{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
+@media (prefers-reduced-motion: reduce){.jrtok{animation:none}.jrhop.on{animation:none}}
+.jrhalves{display:flex;gap:8px}
+.jrhalf{border:1px dashed var(--line);border-radius:6px;padding:4px 7px;display:flex;flex-direction:column;gap:3px}
+.jrhalf>span{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.jrhalf .slot{min-height:22px;display:flex;gap:3px}
+.jrhalf .ghost{width:22px;height:22px;border-radius:5px;background:color-mix(in srgb,var(--amber) 25%,transparent);
+  border:1px solid var(--amber);opacity:.5}
+.jrcap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 18px;
+  margin-top:16px;min-height:108px}
+.jrcapt{font-family:var(--mono);font-size:13px;font-weight:700;margin-bottom:5px}
+.jrcapb{font-size:14px;color:var(--text);max-width:100ch}
+.jrreach{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:8px;
+  border-top:1px solid var(--line);padding-top:7px}
+.jrreach b{color:var(--green)} .jrreach s{color:var(--red);text-decoration-thickness:1.5px}
 </style>
 
 <main id="deck"></main>
@@ -289,8 +333,9 @@ const SLIDES = [
   <p class="eyebrow"><b>tt-metal kernel dojo</b> · interactive walkthrough</p>
   <h1>Circular<br>Buffers<span class="dim">.</span></h1>
   <p class="sub">The queues that connect your kernels. Everything hangs off understanding
-  these properly — <em>including most of your bugs</em>. Six slides of this deck run a live
-  simulation of the actual dojo exercise kernels: step them, race them, deadlock them.</p>
+  these properly — <em>including most of your bugs</em>. Seven slides of this deck are live and
+  interactive: follow a tile through the memory hierarchy, then step the real dojo exercise
+  kernels — race them, deadlock them.</p>
   <div class="api-chips">
     <code class="c-t">cb_reserve_back()</code><code class="c-t">cb_push_back()</code>
     <code class="c-a">cb_wait_front()</code><code class="c-a">cb_pop_front()</code>
@@ -334,9 +379,67 @@ const SLIDES = [
   <p class="src-note">kernel_dojo/theory/02-the-chip.md · 04-circular-buffers.md</p>
 </div>`},
 
+{t:"Where everything lives", h:`
+<div class="wrap">
+  <p class="eyebrow">03 · where everything lives</p>
+  <h2>Follow one tile through all four memories</h2>
+  <p class="lede">There is <b>no cache</b> — nothing moves unless a kernel issues the transfer.
+  Step a tile of <code>a + b</code> through every level it visits. Watch the bottom panel:
+  it tells you <em>who can even touch</em> the memory the tile is currently in — that reachability
+  is the whole reason CBs, SrcA/SrcB, and DST all have to exist.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="jr-step">⏵ step</button>
+    <button class="ctl" id="jr-play">▶ play</button>
+    <button class="ctl" id="jr-reset">↺ restart</button>
+    <span class="sp"></span>
+    <span class="tickbox">stop <b id="jr-prog">1 / 6</b></span>
+  </div>
+  <div class="pipewrap"><div class="jrscene">
+    <div class="jrmem" style="min-width:150px">
+      <span class="jrhd">DRAM · 12 GB</span><span class="jrsub">off-core, shared, ~100s of cycles away</span>
+      <div class="jrstation" id="jr-dramsrc"><span class="jrsl">tensor a</span><div class="slot"></div></div>
+      <div class="jrstation" id="jr-dramsrcb"><span class="jrsl">tensor b</span><div class="slot"></div></div>
+      <div class="jrstation vio" id="jr-dramdst"><span class="jrsl">tensor a+b</span><div class="slot"></div></div>
+    </div>
+    <div class="jrgap">
+      <div class="jrhop" id="jr-hop1">NoC ▶▶<br><code>noc_async_read_page</code><br>reader · NCRISC</div>
+      <div class="jrhop amb" id="jr-hop5">◀◀ NoC<br><code>noc_async_write_page</code><br>writer · BRISC</div>
+    </div>
+    <div class="jrcore">
+      <div class="jrmem" style="min-width:170px">
+        <span class="jrhd">L1 SRAM · 1.4 MB</span><span class="jrsub">plain addressable memory, not a cache — <b>CBs live here</b></span>
+        <div class="jrstation" id="jr-cba"><span class="jrsl">cb_a page</span><div class="slot"></div></div>
+        <div class="jrstation" id="jr-cbb"><span class="jrsl">cb_b page</span><div class="slot"></div></div>
+        <div class="jrstation vio" id="jr-cbout"><span class="jrsl">cb_out page</span><div class="slot"></div></div>
+      </div>
+      <div class="jrgap">
+        <div class="jrhop" id="jr-hop2">unpack ▶▶<br><code>(implicit in add_tiles)</code><br>TRISC0</div>
+        <div class="jrhop amb" id="jr-hop4">◀◀ <code>pack_tile</code><br>rounds to bf16<br>TRISC2</div>
+      </div>
+      <div class="jrmem" style="min-width:210px">
+        <span class="jrhd">math engine</span><span class="jrsub">registers — no L1 address, no NoC port</span>
+        <div style="display:flex;gap:8px">
+          <div class="jrstation" id="jr-srca"><span class="jrsl">SrcA</span><div class="slot"></div></div>
+          <div class="jrstation" id="jr-srcb"><span class="jrsl">SrcB</span><div class="slot"></div></div>
+        </div>
+        <div class="jrhop vio" id="jr-hop3" style="padding:2px">▼ FPU · <code>add_tiles</code> · TRISC1 ▼</div>
+        <div class="jrstation vio" id="jr-dst" style="flex-direction:column;align-items:flex-start">
+          <span class="jrsl">DST · 16 tiles, half-sync</span>
+          <div class="jrhalves">
+            <div class="jrhalf"><span>math fills</span><div class="slot" id="jr-halfa"></div></div>
+            <div class="jrhalf"><span>pack drains</span><div class="slot" id="jr-halfb"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <div class="jrcap" id="jr-cap"></div>
+  <p class="src-note">kernel_dojo/theory/02-the-chip.md — “Memory: three levels, no cache” · 06-compute.md — DST &amp; the handshake</p>
+</div>`},
+
 {t:"Anatomy — a ring of pages", h:`
 <div class="wrap">
-  <p class="eyebrow">03 · anatomy</p>
+  <p class="eyebrow">04 · anatomy</p>
   <h2>A fixed ring of pages; two pointers that wrap</h2>
   <p class="lede">A CB is defined by two numbers: <b>page size</b> (2048 B — one bfloat16 tile)
   and <b>number of pages</b> (the depth, your double-buffering knob). The pointers chase each
@@ -366,7 +469,7 @@ const SLIDES = [
 
 {t:"The four operations", h:`
 <div class="wrap">
-  <p class="eyebrow">04 · the api</p>
+  <p class="eyebrow">05 · the api</p>
   <h2>Four calls. Two of them block.</h2>
   <p class="lede">Producer and consumer each get a two-step protocol. The first call of each
   pair <b>blocks</b> — that's what keeps the kernels in step, and it's what hangs when your
@@ -394,7 +497,7 @@ const SLIDES = [
 
 {t:"Live · lesson 01 — tile copy", h:`
 <div class="wrap">
-  <p class="eyebrow">05 · live simulation · exercise 01_tile_copy</p>
+  <p class="eyebrow">06 · live simulation · exercise 01_tile_copy</p>
   <h2>Reader and writer, one CB, six tiles</h2>
   <p class="lede">The real lesson-01 solution kernels, one instruction per step. NCRISC and BRISC
   run <em>simultaneously</em> — each ⏵ step advances <b>both</b> by one instruction. Watch the
@@ -437,7 +540,7 @@ const SLIDES = [
 
 {t:"Live · lesson 02 — the compute pipeline", h:`
 <div class="wrap">
-  <p class="eyebrow">06 · live simulation · exercise 02_eltwise_unary</p>
+  <p class="eyebrow">07 · live simulation · exercise 02_eltwise_unary</p>
   <h2>Three kernels, two CBs, and the DST handshake</h2>
   <p class="lede">Compute joins the party: <code>exp(x)</code> on every tile. The SFPU can't read
   a CB directly, so each tile is staged into a <b>DST register</b>, transformed in place, and
@@ -473,12 +576,12 @@ const SLIDES = [
 
 {t:"Live · lesson 03 — the FPU path", h:`
 <div class="wrap">
-  <p class="eyebrow">07 · live simulation · exercise 03_eltwise_binary</p>
+  <p class="eyebrow">08 · live simulation · exercise 03_eltwise_binary</p>
   <h2>The FPU path: two operands, straight from L1</h2>
   <p class="lede">Lesson 02 staged every tile into DST because the <b>SFPU</b> can only work in
-  place. The <b>FPU</b> — the matrix engine, where the FLOP/s live — reads <b>both operands
-  directly out of the CBs</b>: <code>copy_tile</code> disappears and one <code>add_tiles</code>
-  call does the work. Compute is now a consumer of <em>two</em> buffers at once, so it must
+  place. The <b>FPU</b> — the matrix engine, where the FLOP/s live — reads <b>both operands from the
+  CBs</b> — the unpacker fills SrcA/SrcB for you (slide 3), so <code>copy_tile</code> disappears
+  and one <code>add_tiles</code> call does the work. Compute is now a consumer of <em>two</em> buffers at once, so it must
   reconcile <em>three</em> ledgers. The reader issues both DRAM reads before one barrier, so the
   round trips overlap. Watch the front pages of cb_a and cb_b flash amber as the FPU pulls from them.</p>
   <div class="simbar">
@@ -517,7 +620,7 @@ const SLIDES = [
 
 {t:"Live · lesson 05 — batching & blocks", h:`
 <div class="wrap">
-  <p class="eyebrow">08 · live simulation · exercise 05_pipelining</p>
+  <p class="eyebrow">09 · live simulation · exercise 05_pipelining</p>
   <h2>Work in blocks: one barrier for four tiles</h2>
   <p class="lede">Same copy, but reserve/push <b>4 pages at a time</b>: four NoC reads go in
   flight together and <em>one</em> barrier drains them, so their latencies overlap instead of
@@ -554,7 +657,7 @@ const SLIDES = [
 
 {t:"Pitfalls — break it on purpose", h:`
 <div class="wrap">
-  <p class="eyebrow">09 · pitfalls · the three that catch everyone</p>
+  <p class="eyebrow">10 · pitfalls · the three that catch everyone</p>
   <h2>Break it on purpose</h2>
   <p class="lede">Each tab is a real bug from the theory chapter, running live. Two of them hang —
   press play and watch <em>which call</em> blocks and <em>why</em>. One is worse: it finishes,
@@ -633,7 +736,7 @@ const SLIDES = [
 
 {t:"The accounting rule", h:`
 <div class="wrap">
-  <p class="eyebrow">10 · the rule that explains every hang</p>
+  <p class="eyebrow">11 · the rule that explains every hang</p>
   <h2>The accounting rule</h2>
   <blockquote class="rule">Over the life of the kernel, every <b>reserve</b> must have a matching
   <b>push</b>, and every <b>wait</b> a matching <b>pop</b> — <b>and the totals must agree between the
@@ -880,6 +983,79 @@ function demoPop(){
   cbPop(cb,1);
   renderDemo("cb_pop_front → tile "+t+" released from page "+slot+", producer may reuse it","ok");
 }
+
+/* ============================== journey: where everything lives ============================== */
+const JR={cur:0,timer:null,steps:[
+ {station:"dramsrc",hop:null,
+  tokens:{dramsrc:{l:"a"},dramsrcb:{l:"b"}},
+  title:"in DRAM — a tile of tensor a",
+  body:"Tensors start and end here: 12 GB, off-core, interleaved across 6 banks, hundreds of cycles away. "
+      +"There is no cache and no automatic movement — this tile stays put until a kernel explicitly fetches it.",
+  reach:"who can touch it: <b>any core — but only via a NoC transaction</b> · <s>direct load/store from any processor</s>"},
+ {station:"cba",hop:1,
+  tokens:{dramsrc:{l:"a",dim:1},dramsrcb:{l:"b",dim:1},cba:{l:"a"},cbb:{l:"b"}},
+  title:"noc_async_read_page → L1 — reader kernel · NCRISC",
+  body:"The tile lands in cb_a's page. A circular buffer is nothing more than a block of L1 plus read/write "
+      +"counters — get_write_ptr handed the reader a plain L1 address to point the NoC at. After the barrier, "
+      +"cb_push_back publishes the page. (Reads copy — a and b are still in DRAM.)",
+  reach:"who can touch L1: <b>all 5 RISC-V processors (plain load/store)</b> · <b>the NoC</b> — this shared visibility is why CBs can connect kernels"},
+ {station:"srca",hop:2,
+  tokens:{dramsrc:{l:"a",dim:1},dramsrcb:{l:"b",dim:1},cba:{l:"a",dim:1},cbb:{l:"b",dim:1},srca:{l:"a"},srcb:{l:"b"}},
+  title:"unpack → SrcA / SrcB — TRISC0, hidden inside add_tiles",
+  body:"SrcA and SrcB are NOT circular buffers — they are one-tile register files at the FPU's input. The unpacker "
+      +"copies the front tiles of cb_a and cb_b into them. You never write this call: add_tiles implies it. "
+      +"(The SFPU has no Src path at all — that's why lesson 02 must stage through DST with an explicit copy_tile.)",
+  reach:"who can touch Src: <b>unpacker writes</b> · <b>FPU reads</b> · <s>your kernel code</s> <s>NoC</s> <s>BRISC/NCRISC</s>"},
+ {station:"dst",hop:3,ghosts:["halfb"],
+  tokens:{dramsrc:{l:"a",dim:1},dramsrcb:{l:"b",dim:1},halfa:{l:"Σ",v:1}},
+  title:"add_tiles → DST — FPU · TRISC1  (then cb_pop_front frees the input pages)",
+  body:"The math engines can only write results to DST. In half-sync mode its 16 tiles split into two halves that "
+      +"ping-pong: math fills one while the packer drains the other — a hardwired depth-2 double buffer, which is "
+      +"exactly why only 8 tiles are usable. So “use DST as a buffer” is already built in — but only between "
+      +"math and pack. The tile_regs_acquire/commit/wait/release handshake is that inner buffer's push/pop protocol.",
+  reach:"who can touch DST: <b>math writes</b> · <b>packer reads</b> · <s>NoC</s> <s>BRISC</s> <s>NCRISC</s> — nothing that could ship it to DRAM, so DST cannot replace cb_out"},
+ {station:"cbout",hop:4,
+  tokens:{dramsrc:{l:"a",dim:1},dramsrcb:{l:"b",dim:1},cbout:{l:"Σ",v:1}},
+  title:"pack_tile → L1 — packer · TRISC2",
+  body:"The packer is the ONLY exit from DST, and its only destination is L1. This is why cb_out must exist: the "
+      +"writer needs an L1 address to aim the NoC at, and DST doesn't have one. Packing is also where the result is "
+      +"rounded to the CB's data format (bfloat16) — which is why matmul accumulates in DST and packs once, at the end.",
+  reach:"who can touch L1: <b>all 5 processors</b> · <b>the NoC</b> — the result is back in shared territory, cb_push_back hands it to the writer"},
+ {station:"dramdst",hop:5,
+  tokens:{dramsrc:{l:"a",dim:1},dramsrcb:{l:"b",dim:1},dramdst:{l:"Σ",v:1}},
+  title:"noc_async_write_page → DRAM — writer kernel · BRISC",
+  body:"After the write barrier, cb_pop_front recycles the page and the tile is home. Tally for one tile of a+b: "
+      +"four memories (DRAM → L1 → Src → DST → L1 → DRAM), five processors, and every hop was an explicit call. "
+      +"Nothing moved by itself — that is the entire programming model.",
+  reach:"who can touch it: <b>any core, via the NoC</b> — ⏵ steps back to the start"},
+]};
+function jrRender(){
+  const st=JR.steps[JR.cur];
+  document.querySelectorAll(".jrstation").forEach(e=>e.classList.remove("on"));
+  document.querySelectorAll(".jrscene .slot").forEach(e=>e.innerHTML="");
+  document.querySelectorAll(".jrhop").forEach(e=>e.classList.remove("on"));
+  for(const id in st.tokens){
+    const t=st.tokens[id],el=$("jr-"+id);if(!el)continue;
+    const slot=el.classList.contains("slot")?el:el.querySelector(".slot");
+    slot.innerHTML='<span class="jrtok'+(t.dim?" dim":"")+(t.v?" vio":"")+'">'+t.l+"</span>";
+  }
+  if(st.ghosts)st.ghosts.forEach(id=>{$("jr-"+id).innerHTML='<span class="ghost"></span><span class="ghost"></span>';});
+  if(st.station)$("jr-"+st.station).classList.add("on");
+  if(st.hop)$("jr-hop"+st.hop).classList.add("on");
+  $("jr-cap").innerHTML='<div class="jrcapt">'+st.title+'</div><div class="jrcapb">'+st.body
+    +'</div><div class="jrreach">'+st.reach+"</div>";
+  $("jr-prog").textContent=(JR.cur+1)+" / "+JR.steps.length;
+}
+function jrStep(){JR.cur=(JR.cur+1)%JR.steps.length;jrRender();}
+function jrStop(){if(JR.timer){clearInterval(JR.timer);JR.timer=null;}$("jr-play").textContent="▶ play";}
+$("jr-step").onclick=()=>{jrStop();jrStep();};
+$("jr-reset").onclick=()=>{jrStop();JR.cur=0;jrRender();};
+$("jr-play").onclick=()=>{
+  if(JR.timer){jrStop();}
+  else{JR.timer=setInterval(jrStep,2600);$("jr-play").textContent="⏸ pause";}
+};
+jrRender();
+{const goBase=go;go=i=>{goBase(i);jrStop();};}
 
 /* ============================== lesson 01 sim ============================== */
 const L01_N=6;let l01depth=2;
