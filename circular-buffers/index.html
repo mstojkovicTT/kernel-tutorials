@@ -9,6 +9,7 @@
 </head>
 <body>
 <style>
+<style>
 /* ---------- tokens: dark-first (deliberate), light overrides both ways ---------- */
 :root{
   --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
@@ -470,9 +471,53 @@ const SLIDES = [
   <p class="src-note">exercises/02_eltwise_unary/solution/{reader,compute,writer}.cpp · theory/06-compute.md — one compute source, compiled three times for TRISC0/1/2</p>
 </div>`},
 
+{t:"Live · lesson 03 — the FPU path", h:`
+<div class="wrap">
+  <p class="eyebrow">07 · live simulation · exercise 03_eltwise_binary</p>
+  <h2>The FPU path: two operands, straight from L1</h2>
+  <p class="lede">Lesson 02 staged every tile into DST because the <b>SFPU</b> can only work in
+  place. The <b>FPU</b> — the matrix engine, where the FLOP/s live — reads <b>both operands
+  directly out of the CBs</b>: <code>copy_tile</code> disappears and one <code>add_tiles</code>
+  call does the work. Compute is now a consumer of <em>two</em> buffers at once, so it must
+  reconcile <em>three</em> ledgers. The reader issues both DRAM reads before one barrier, so the
+  round trips overlap. Watch the front pages of cb_a and cb_b flash amber as the FPU pulls from them.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="l03-step">⏵ step</button>
+    <button class="ctl" id="l03-play">▶ play</button>
+    <button class="ctl" id="l03-reset">↺ reset</button>
+    <span class="sp"></span>
+    <span class="tickbox">cycle <b id="l03-tick">0</b></span>
+  </div>
+  <div class="hangbar" id="l03-hang"></div>
+  <div class="donebar" id="l03-done"></div>
+  <div class="simgrid3">
+    <div class="pane" id="l03-rp"></div>
+    <div class="pane violetside" id="l03-cp"></div>
+    <div class="pane amberside" id="l03-wp"></div>
+  </div>
+  <div style="display:flex;gap:24px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:18px">
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div><div class="striplbl">DRAM a</div><div class="strip" id="l03-srcA"></div></div>
+      <div><div class="striplbl">DRAM b</div><div class="strip" id="l03-srcB"></div></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:center">
+      <div class="vizcol"><svg class="ring" id="l03-ra" width="112" height="112" viewBox="0 0 112 112"></svg><div class="cbcap">cb_a · <span id="l03-ta"></span></div></div>
+      <div class="vizcol"><svg class="ring" id="l03-rb" width="112" height="112" viewBox="0 0 112 112"></svg><div class="cbcap">cb_b · <span id="l03-tb"></span></div></div>
+    </div>
+    <div class="dstbox">
+      <div class="striplbl">FPU → DST (no staging)</div>
+      <div class="dstslots" id="l03-dst8"></div>
+      <div class="holder" id="l03-holder">free</div>
+    </div>
+    <div class="vizcol"><svg class="ring vio" id="l03-rout" width="130" height="130" viewBox="0 0 130 130"></svg><div class="cbcap">cb_out · <span id="l03-tout"></span></div></div>
+    <div><div class="striplbl">DRAM dst = a + b</div><div class="strip" id="l03-dst"></div></div>
+  </div>
+  <p class="src-note">exercises/03_eltwise_binary/solution/{reader,compute,writer}.cpp · theory/06-compute.md — the FPU reads two CBs directly; the SFPU reads DST only</p>
+</div>`},
+
 {t:"Live · lesson 05 — batching & blocks", h:`
 <div class="wrap">
-  <p class="eyebrow">07 · live simulation · exercise 05_pipelining</p>
+  <p class="eyebrow">08 · live simulation · exercise 05_pipelining</p>
   <h2>Work in blocks: one barrier for four tiles</h2>
   <p class="lede">Same copy, but reserve/push <b>4 pages at a time</b>: four NoC reads go in
   flight together and <em>one</em> barrier drains them, so their latencies overlap instead of
@@ -509,7 +554,7 @@ const SLIDES = [
 
 {t:"Pitfalls — break it on purpose", h:`
 <div class="wrap">
-  <p class="eyebrow">08 · pitfalls · the three that catch everyone</p>
+  <p class="eyebrow">09 · pitfalls · the three that catch everyone</p>
   <h2>Break it on purpose</h2>
   <p class="lede">Each tab is a real bug from the theory chapter, running live. Two of them hang —
   press play and watch <em>which call</em> blocks and <em>why</em>. One is worse: it finishes,
@@ -588,7 +633,7 @@ const SLIDES = [
 
 {t:"The accounting rule", h:`
 <div class="wrap">
-  <p class="eyebrow">09 · the rule that explains every hang</p>
+  <p class="eyebrow">10 · the rule that explains every hang</p>
   <h2>The accounting rule</h2>
   <blockquote class="rule">Over the life of the kernel, every <b>reserve</b> must have a matching
   <b>push</b>, and every <b>wait</b> a matching <b>pop</b> — <b>and the totals must agree between the
@@ -1008,6 +1053,116 @@ function renderL02(sim){
 }
 const l02=new Sim("l02",buildL02,renderL02);
 
+/* ============================== lesson 03 sim (FPU path) ============================== */
+const L03_N=4;
+function buildL03(){
+  const cba=newCB(2),cbb=newCB(2),cbout=newCB(2);
+  const srcA=Array.from({length:L03_N},()=>({state:"idle"}));
+  const srcB=Array.from({length:L03_N},()=>({state:"idle"}));
+  const dst=Array.from({length:L03_N},()=>({state:"empty"}));
+  const dstRegs={slots:Array.from({length:8},()=>null),holder:"free"};
+  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",i:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_reserve_back(cb_a, 1);",
+"    cb_reserve_back(cb_b, 1);",
+"    // both reads in flight before either is awaited",
+"    noc_async_read_page(i, a, get_write_ptr(cb_a));",
+"    noc_async_read_page(i, b, get_write_ptr(cb_b));",
+"    noc_async_read_barrier();  // drains BOTH",
+"    cb_push_back(cb_a, 1);",
+"    cb_push_back(cb_b, 1);",
+"}"],
+    program:[
+      {line:1,run:()=>cbReserve(cba,1)},
+      {line:2,run:()=>cbReserve(cbb,1)},
+      {line:4,run:k=>{const p=pageAt(cba,cba.wrPush);p.state="filling";p.tile=k.i;srcA[k.i].state="reading";return null;}},
+      {line:5,run:k=>{const p=pageAt(cbb,cbb.wrPush);p.state="filling";p.tile=k.i;srcB[k.i].state="reading";return null;}},
+      {line:6,run:()=>{barrierReads(cba,srcA);barrierReads(cbb,srcB);return null;}},
+      {line:7,run:()=>cbPush(cba,1)},
+      {line:8,run:()=>cbPush(cbb,1)},
+      loopIns(L03_N)
+    ]};
+  const compute={name:"compute.cpp",proc:"TRISC 0·1·2 · FPU",color:"violet",i:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_wait_front(cb_a, 1);",
+"    cb_wait_front(cb_b, 1);",
+"    tile_regs_acquire();",
+"    add_tiles(cb_a, cb_b, 0, 0, dst); // reads L1 direct",
+"    tile_regs_commit();",
+"    cb_reserve_back(cb_out, 1);",
+"    tile_regs_wait();",
+"    pack_tile(dst, cb_out);",
+"    tile_regs_release();",
+"    cb_push_back(cb_out, 1);",
+"    cb_pop_front(cb_a, 1);",
+"    cb_pop_front(cb_b, 1);",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cba,1)},
+      {line:2,run:()=>cbWait(cbb,1)},
+      {line:3,run:()=>{dstRegs.holder="math";dstRegs.slots=Array.from({length:8},()=>null);return null;}},
+      {line:4,run:k=>{pageAt(cba,cba.rd).state="draining";pageAt(cbb,cbb.rd).state="draining";
+        dstRegs.slots[0]={t:k.i};return null;}},
+      {line:5,run:()=>{if(pageAt(cba,cba.rd).state==="draining")pageAt(cba,cba.rd).state="ready";
+        if(pageAt(cbb,cbb.rd).state==="draining")pageAt(cbb,cbb.rd).state="ready";
+        dstRegs.holder="committed";return null;}},
+      {line:6,run:()=>cbReserve(cbout,1)},
+      {line:7,run:()=>{dstRegs.holder="pack";return null;}},
+      {line:8,run:k=>{const p=pageAt(cbout,cbout.wrPush);p.tile=k.i;p.state="full";return null;}},
+      {line:9,run:()=>{dstRegs.holder="free";return null;}},
+      {line:10,run:()=>cbPush(cbout,1)},
+      {line:11,run:()=>cbPop(cba,1)},
+      {line:12,run:()=>cbPop(cbb,1)},
+      loopIns(L03_N)
+    ]};
+  const writer={name:"writer.cpp",proc:"BRISC",color:"amber",i:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_wait_front(cb_out, 1);",
+"    uint32_t addr = get_read_ptr(cb_out);",
+"    noc_async_write_page(i, dst, addr);",
+"    noc_async_write_barrier();",
+"    cb_pop_front(cb_out, 1);",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cbout,1)},
+      {line:2,run:()=>null},
+      {line:3,run:k=>{const p=pageAt(cbout,cbout.rd);p.state="draining";dst[k.i]={state:"writing",val:p.tile};return null;}},
+      {line:4,run:()=>{barrierWrites(cbout,dst);return null;}},
+      {line:5,run:()=>cbPop(cbout,1)},
+      loopIns(L03_N)
+    ]};
+  return {kernels:[reader,compute,writer],cba,cbb,cbout,srcA,srcB,dst,dstRegs};
+}
+function renderL03(sim){
+  const s=sim.state;
+  $("l03-rp").innerHTML=paneHTML(sim.kernels[0]);
+  $("l03-cp").innerHTML=paneHTML(sim.kernels[1]);
+  $("l03-wp").innerHTML=paneHTML(sim.kernels[2]);
+  drawRing("l03-ra",s.cba);drawRing("l03-rb",s.cbb);drawRing("l03-rout",s.cbout);
+  $("l03-ta").innerHTML="pushed "+s.cba.pushed+" · popped "+s.cba.popped;
+  $("l03-tb").innerHTML="pushed "+s.cbb.pushed+" · popped "+s.cbb.popped;
+  $("l03-tout").innerHTML="pushed "+s.cbout.pushed+" · popped "+s.cbout.popped;
+  $("l03-srcA").innerHTML=stripHTML(s.srcA);
+  $("l03-srcB").innerHTML=stripHTML(s.srcB);
+  $("l03-dst").innerHTML=stripHTML(s.dst,true);
+  $("l03-dst8").innerHTML=s.dstRegs.slots.map((sl,i)=>
+    '<div class="dsts'+(sl?" on":"")+'" title="dst['+i+']">'+(sl?"Σ"+sl.t:i)+"</div>").join("");
+  const h=$("l03-holder");h.textContent={free:"DST: free",math:"DST: MATH holds",committed:"DST: committed",pack:"DST: PACK holds"}[s.dstRegs.holder];
+  h.className="holder "+(s.dstRegs.holder==="free"?"":s.dstRegs.holder);
+  $("l03-tick").textContent=sim.tick;
+  $("l03-hang").className="hangbar"+(sim.hang?" on":"");
+  if(sim.hang)$("l03-hang").innerHTML=hangHTML();
+  const ok=!sim.running&&!sim.hang;
+  $("l03-done").className="donebar"+(ok?" on":"");
+  if(ok)$("l03-done").innerHTML="✓ all three kernels returned in <b>"+sim.tick+"</b> cycles. cb_a: "
+    +s.cba.pushed+" = "+s.cba.popped+" · cb_b: "+s.cbb.pushed+" = "+s.cbb.popped+" · cb_out: "
+    +s.cbout.pushed+" = "+s.cbout.popped+" — three buffers, three ledgers, all reconcile.";
+}
+const l03=new Sim("l03",buildL03,renderL03);
+
 /* ============================== lesson 05 sim ============================== */
 const L05_N=8;let l05block=1;const l05res={};
 function buildL05(){
@@ -1178,7 +1333,7 @@ const pfC=new Sim("pfC",buildPfC,sim=>{
 /* ============================== wiring ============================== */
 miniRing("miniring1");miniRing("miniring2");
 $("demopush").onclick=demoPush;$("demopop").onclick=demoPop;renderDemo();
-wireSim(l01,"l01");wireSim(l02,"l02");wireSim(l05,"l05");
+wireSim(l01,"l01");wireSim(l02,"l02");wireSim(l03,"l03");wireSim(l05,"l05");
 wireSim(pfA,"pfA");wireSim(pfB,"pfB");wireSim(pfC,"pfC");
 document.querySelectorAll('.optgrp button[data-d]').forEach(b=>{
   b.onclick=()=>{l01depth=+b.dataset.d;
@@ -1199,7 +1354,7 @@ document.querySelectorAll('.tabs button').forEach(b=>{
 });
 /* initial renders for sims that live on non-active slides happen at construction;
    constructions above ran before slides existed? No — Sim constructors ran after deck build. */
-[l01,l02,l05,pfA,pfB,pfC].forEach(s=>s.render());
+[l01,l02,l03,l05,pfA,pfB,pfC].forEach(s=>s.render());
 </script>
 </body>
 </html>
