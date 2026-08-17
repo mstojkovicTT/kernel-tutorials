@@ -1,0 +1,1205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Circular Buffer Dojo</title>
+<meta name="description" content="Interactive walkthrough of tt-metal circular buffers — cb_reserve_back, cb_push_back, cb_wait_front, cb_pop_front — simulated live through the kernel dojo exercises.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🥋</text></svg>">
+</head>
+<body>
+<style>
+/* ---------- tokens: dark-first (deliberate), light overrides both ways ---------- */
+:root{
+  --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
+  --line:#2a3245; --text:#e6eaf3; --muted:#8f97ab; --faint:#5b647a;
+  --teal:#45c8bb; --amber:#e8a84c; --violet:#9d7bf5; --red:#ef6b6b; --green:#5bc17e;
+  --hl:#233048; --hl-blk:#3d2330;
+  --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f2f3f7; --panel:#ffffff; --panel2:#e9ebf3; --code-bg:#f6f7fb;
+    --line:#d4d8e4; --text:#20263a; --muted:#5d6579; --faint:#8b92a6;
+    --teal:#0d8f82; --amber:#a86f10; --violet:#6b46d8; --red:#c04545; --green:#2e8f57;
+    --hl:#dfe7f5; --hl-blk:#f6dcdc;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f2f3f7; --panel:#ffffff; --panel2:#e9ebf3; --code-bg:#f6f7fb;
+  --line:#d4d8e4; --text:#20263a; --muted:#5d6579; --faint:#8b92a6;
+  --teal:#0d8f82; --amber:#a86f10; --violet:#6b46d8; --red:#c04545; --green:#2e8f57;
+  --hl:#dfe7f5; --hl-blk:#f6dcdc;
+}
+:root[data-theme="dark"]{
+  --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
+  --line:#2a3245; --text:#e6eaf3; --muted:#8f97ab; --faint:#5b647a;
+  --teal:#45c8bb; --amber:#e8a84c; --violet:#9d7bf5; --red:#ef6b6b; --green:#5bc17e;
+  --hl:#233048; --hl-blk:#3d2330;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:15px;line-height:1.55;overflow:hidden}
+h1,h2,h3{font-family:var(--mono);letter-spacing:-.02em;text-wrap:balance;margin:0}
+code,pre,kbd,.mono{font-family:var(--mono)}
+button{font-family:var(--mono);cursor:pointer}
+a{color:var(--teal)}
+
+#deck{height:calc(100% - 52px);position:relative}
+.slide{display:none;height:100%;overflow-y:auto;overflow-x:hidden}
+.slide.active{display:block;animation:fadein .28s ease}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){
+  .slide.active{animation:none}
+  .dot-anim,.pg-filling,.noclink.on{animation:none !important}
+}
+.wrap{max-width:1280px;margin:0 auto;padding:28px 40px 40px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.eyebrow b{color:var(--teal);font-weight:600}
+h2{font-size:26px;margin-bottom:6px}
+.lede{color:var(--muted);max-width:68ch;margin:4px 0 20px}
+.lede code{color:var(--text);font-size:.92em}
+.src-note{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:18px}
+
+/* ---------- deck bar ---------- */
+#deckbar{height:52px;border-top:1px solid var(--line);background:var(--panel);
+  display:flex;align-items:center;gap:14px;padding:0 20px}
+#deckbar .title{font-family:var(--mono);font-size:12px;color:var(--muted);flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#deckbar .dots{display:flex;gap:8px}
+#deckbar .dots button{width:10px;height:10px;border-radius:50%;border:1px solid var(--faint);
+  background:transparent;padding:0}
+#deckbar .dots button.on{background:var(--teal);border-color:var(--teal)}
+#deckbar .dots button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.navbtn{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  border-radius:6px;padding:6px 14px;font-size:13px}
+.navbtn:hover{border-color:var(--teal)}
+.navbtn:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+#pgnum{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:44px;text-align:center}
+
+/* ---------- title slide ---------- */
+.hero{display:flex;flex-direction:column;justify-content:center;min-height:82%;max-width:1100px;margin:0 auto;padding:40px}
+.hero h1{font-size:clamp(38px,6vw,68px);line-height:1.06;font-weight:700}
+.hero h1 .dim{color:var(--faint)}
+.hero .sub{font-size:17px;color:var(--muted);max-width:62ch;margin-top:18px}
+.hero .ringrow{margin:34px 0 8px}
+.hero .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:30px}
+kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;font-size:11px;background:var(--panel)}
+.api-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+.api-chips code{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:4px 10px;font-size:12.5px}
+.api-chips .c-t{color:var(--teal)} .api-chips .c-a{color:var(--amber)}
+
+/* ---------- pipeline diagram (slide 2) ---------- */
+.pipe{display:flex;align-items:stretch;gap:0;margin:26px 0 8px;min-width:980px}
+.pipewrap{overflow-x:auto;padding-bottom:8px}
+.pnode{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:12px 14px;text-align:center;min-width:108px;display:flex;flex-direction:column;justify-content:center;gap:3px}
+.pnode .nm{font-family:var(--mono);font-size:13px;font-weight:600}
+.pnode .ds{font-size:11px;color:var(--muted)}
+.pnode.dram{border-color:var(--faint)}
+.pnode.reader .nm{color:var(--teal)} .pnode.writer .nm{color:var(--amber)} .pnode.compute .nm{color:var(--violet)}
+.core{border:1.5px dashed var(--faint);border-radius:14px;padding:26px 16px 10px;position:relative;
+  display:flex;align-items:stretch;gap:0;margin:0 6px}
+.core::before{content:"one Tensix core · L1 SRAM 1.4 MB · 5 RISC-V processors";
+  position:absolute;top:6px;left:16px;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--faint)}
+.flow{display:flex;flex-direction:column;justify-content:center;align-items:center;
+  min-width:86px;position:relative;gap:2px;padding:0 4px}
+.flow .lbl{font-family:var(--mono);font-size:10px;color:var(--muted);white-space:nowrap}
+.flow .lbl.t{color:var(--teal)} .flow .lbl.a{color:var(--amber)}
+.flow .track{width:100%;height:2px;background:var(--line);position:relative;margin:6px 0;border-radius:2px}
+.flow .track .dot-anim{position:absolute;top:-3px;width:8px;height:8px;border-radius:50%;
+  background:var(--teal);animation:flowdot 2.4s linear infinite}
+.flow .track .dot-anim.d2{animation-delay:1.2s}
+.flow.out .dot-anim{background:var(--amber)}
+.flow.vio .dot-anim{background:var(--violet)}
+@keyframes flowdot{from{left:-4%;opacity:0}12%{opacity:1}88%{opacity:1}to{left:98%;opacity:0}}
+.cbnode{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:88px}
+.cbnode svg{display:block}
+.cbnode .nm{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.dstchip{margin-top:8px;font-family:var(--mono);font-size:10.5px;color:var(--violet);
+  border:1px solid var(--violet);border-radius:5px;padding:2px 7px}
+.legend2{display:flex;gap:26px;flex-wrap:wrap;margin-top:20px;font-size:13px;color:var(--muted)}
+.legend2 b{font-family:var(--mono);font-weight:600;color:var(--text)}
+.legend2 .sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}
+
+/* ---------- generic panels ---------- */
+.panelbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+table.opstable{border-collapse:collapse;width:100%;font-size:14px}
+table.opstable th,table.opstable td{border:1px solid var(--line);padding:9px 14px;text-align:left}
+table.opstable th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--panel2)}
+table.opstable code{font-size:13px}
+.t{color:var(--teal)} .a{color:var(--amber)} .v{color:var(--violet)} .r{color:var(--red)} .g{color:var(--green)}
+
+/* ---------- sim layout ---------- */
+.simbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0 16px}
+.simbar .sp{flex:1}
+.ctl{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:6px;
+  padding:7px 16px;font-size:13px}
+.ctl:hover{border-color:var(--teal)}
+.ctl:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.ctl.primary{background:var(--teal);color:var(--bg);border-color:var(--teal);font-weight:700}
+.tickbox{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.tickbox b{color:var(--text)}
+.optgrp{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.optgrp button{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px}
+.optgrp button.on{border-color:var(--teal);color:var(--teal);background:color-mix(in srgb,var(--teal) 10%,transparent)}
+.hangbar{display:none;background:color-mix(in srgb,var(--red) 14%,var(--panel));border:1px solid var(--red);
+  color:var(--text);border-radius:8px;padding:10px 16px;font-size:13.5px;margin:0 0 14px}
+.hangbar.on{display:block}
+.hangbar b{color:var(--red);font-family:var(--mono)}
+.donebar{display:none;background:color-mix(in srgb,var(--green) 12%,var(--panel));border:1px solid var(--green);
+  border-radius:8px;padding:10px 16px;font-size:13.5px;margin:0 0 14px}
+.donebar.on{display:block}
+
+.simgrid{display:grid;grid-template-columns:minmax(300px,1fr) minmax(320px,1.08fr) minmax(300px,1fr);gap:18px;align-items:start}
+.simgrid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;align-items:start}
+@media (max-width:1000px){.simgrid,.simgrid3{grid-template-columns:1fr}}
+
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.pane-hd{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel2)}
+.pane-hd .kname{font-family:var(--mono);font-size:12.5px;font-weight:600}
+.proc{font-family:var(--mono);font-size:10px;letter-spacing:.08em;border-radius:4px;padding:2px 7px;border:1px solid}
+.proc-teal{color:var(--teal);border-color:var(--teal)}
+.proc-amber{color:var(--amber);border-color:var(--amber)}
+.proc-violet{color:var(--violet);border-color:var(--violet)}
+pre.code{margin:0;padding:10px 0;background:var(--code-bg);font-size:12.3px;line-height:1.62;overflow-x:auto}
+.cl{padding:0 14px;white-space:pre}
+.cl-cur{background:var(--hl);box-shadow:inset 3px 0 0 var(--teal)}
+.pane.amberside .cl-cur{box-shadow:inset 3px 0 0 var(--amber)}
+.pane.violetside .cl-cur{box-shadow:inset 3px 0 0 var(--violet)}
+.cl-blk{background:var(--hl-blk);box-shadow:inset 3px 0 0 var(--red)}
+.pane-ft{padding:7px 12px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11.5px;min-height:34px}
+.st-run{color:var(--muted)} .st-done{color:var(--green)} .st-blk{color:var(--red)}
+
+/* ---------- CB ring & strips ---------- */
+.vizcol{display:flex;flex-direction:column;align-items:center;gap:10px}
+.vizcol .cbcap{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.vizcol .cbcap b{color:var(--text)}
+svg.ring{overflow:visible}
+.pg{stroke-width:1.5}
+.pg-free{fill:var(--panel2);stroke:var(--line)}
+.pg-reserved{fill:color-mix(in srgb,var(--teal) 14%,transparent);stroke:var(--teal);stroke-dasharray:4 3}
+.pg-filling{fill:color-mix(in srgb,var(--teal) 45%,transparent);stroke:var(--teal);animation:pgpulse 1s ease-in-out infinite}
+.pg-full{fill:color-mix(in srgb,var(--teal) 65%,transparent);stroke:var(--teal);stroke-dasharray:4 3}
+.pg-ready{fill:var(--teal);stroke:var(--teal)}
+.pg-draining{fill:var(--amber);stroke:var(--amber);animation:pgpulse 1s ease-in-out infinite}
+.ring.vio .pg-reserved{fill:color-mix(in srgb,var(--violet) 14%,transparent);stroke:var(--violet)}
+.ring.vio .pg-filling,.ring.vio .pg-full{fill:color-mix(in srgb,var(--violet) 55%,transparent);stroke:var(--violet)}
+.ring.vio .pg-ready{fill:var(--violet);stroke:var(--violet)}
+@keyframes pgpulse{50%{opacity:.55}}
+.pgt{font-family:var(--mono);font-size:13px;font-weight:700;fill:var(--bg);text-anchor:middle;dominant-baseline:central}
+.pg-reserved-t,.pg-free-t{fill:var(--muted)}
+.ctr-n{font-family:var(--mono);font-size:20px;font-weight:700;fill:var(--text);text-anchor:middle}
+.ctr-l{font-family:var(--mono);font-size:9px;letter-spacing:.1em;fill:var(--muted);text-anchor:middle;text-transform:uppercase}
+.ptr{font-family:var(--mono);font-size:10px;font-weight:700;text-anchor:middle;dominant-baseline:central}
+.ptr-rd{fill:var(--amber)} .ptr-wr{fill:var(--teal)}
+.ptrline{stroke-width:1.5;fill:none}
+.ptrline-rd{stroke:var(--amber)} .ptrline-wr{stroke:var(--teal)}
+
+.strip{display:flex;gap:5px;flex-wrap:wrap;justify-content:center}
+.striplbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);text-align:center;margin-bottom:5px}
+.tile{width:30px;height:30px;border-radius:6px;border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;font-weight:600;color:var(--faint);background:var(--panel2)}
+.t-idle{}
+.t-reading{border-color:var(--teal);color:var(--teal);animation:pgpulse 1s infinite}
+.t-read{background:color-mix(in srgb,var(--teal) 22%,var(--panel2));border-color:var(--teal);color:var(--text)}
+.t-empty{border-style:dashed}
+.t-writing{border-color:var(--amber);color:var(--amber);animation:pgpulse 1s infinite}
+.t-written{background:var(--amber);border-color:var(--amber);color:var(--bg)}
+.t-written.vio{background:var(--violet);border-color:var(--violet)}
+.t-wrong{background:color-mix(in srgb,var(--red) 30%,var(--panel2));border-color:var(--red);color:var(--red)}
+.noclink{font-family:var(--mono);font-size:10.5px;color:var(--faint);border:1px dashed var(--line);
+  border-radius:5px;padding:2px 10px;letter-spacing:.12em}
+.noclink.on{color:var(--teal);border-color:var(--teal)}
+.noclink.on.amb{color:var(--amber);border-color:var(--amber)}
+@keyframes nocblink{50%{opacity:.4}}
+.noclink.on{animation:nocblink .8s infinite}
+.cbtotals{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.cbtotals b{color:var(--text)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-family:var(--mono);font-size:11px;color:var(--muted);justify-content:center}
+.legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px;border:1px solid var(--line)}
+
+/* DST register strip */
+.dstbox{display:flex;flex-direction:column;align-items:center;gap:7px}
+.dstslots{display:flex;gap:4px}
+.dsts{width:26px;height:26px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);
+  display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:11px;color:var(--faint)}
+.dsts.on{background:var(--violet);border-color:var(--violet);color:var(--bg);font-weight:700}
+.holder{font-family:var(--mono);font-size:10.5px;border-radius:99px;padding:3px 12px;border:1px solid var(--line);color:var(--muted)}
+.holder.math{color:var(--violet);border-color:var(--violet)}
+.holder.committed{color:var(--teal);border-color:var(--teal)}
+.holder.pack{color:var(--amber);border-color:var(--amber)}
+
+/* pitfall tabs */
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 4px}
+.tabs button{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:8px;padding:8px 16px;font-size:12.5px}
+.tabs button.on{border-color:var(--red);color:var(--red);background:color-mix(in srgb,var(--red) 8%,transparent)}
+.tabpane{display:none}.tabpane.on{display:block}
+
+/* slide 3 demo */
+.demo3{display:grid;grid-template-columns:minmax(300px,1fr) minmax(340px,1fr);gap:30px;align-items:center;margin-top:10px}
+@media (max-width:900px){.demo3{grid-template-columns:1fr}}
+.demo3 .facts{display:flex;flex-direction:column;gap:12px}
+.factrow{display:flex;gap:12px;align-items:baseline}
+.factrow .k{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:150px}
+.factrow .v2{font-family:var(--mono);font-size:14px;font-weight:600}
+.demomsg{font-family:var(--mono);font-size:12.5px;min-height:44px;border:1px solid var(--line);
+  border-radius:8px;padding:9px 13px;background:var(--code-bg);color:var(--muted)}
+.demomsg.blk{border-color:var(--red);color:var(--red)}
+.demomsg.ok{border-color:var(--line);color:var(--text)}
+.bigbtn{padding:10px 20px;font-size:13.5px;border-radius:8px;border:1px solid;background:transparent}
+.bigbtn.push{color:var(--teal);border-color:var(--teal)}
+.bigbtn.push:hover{background:color-mix(in srgb,var(--teal) 12%,transparent)}
+.bigbtn.pop{color:var(--amber);border-color:var(--amber)}
+.bigbtn.pop:hover{background:color-mix(in srgb,var(--amber) 12%,transparent)}
+
+blockquote.rule{border-left:3px solid var(--teal);margin:18px 0;padding:10px 20px;background:var(--panel);
+  border-radius:0 8px 8px 0;font-size:16px;max-width:72ch}
+blockquote.rule b{color:var(--teal)}
+.twocol{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:18px}
+@media (max-width:900px){.twocol{grid-template-columns:1fr}}
+.gonext{font-family:var(--mono);font-size:13px;background:var(--code-bg);border:1px solid var(--line);
+  border-radius:8px;padding:14px 18px;line-height:2}
+.gonext .c{color:var(--faint)}
+</style>
+
+<main id="deck"></main>
+<nav id="deckbar">
+  <button class="navbtn" id="prevb" aria-label="previous slide">◀</button>
+  <span id="pgnum">1/9</span>
+  <button class="navbtn" id="nextb" aria-label="next slide">▶</button>
+  <span class="title" id="barTitle"></span>
+  <span class="dots" id="dots"></span>
+</nav>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+/* ============================== slides ============================== */
+const SLIDES = [
+{t:"Circular Buffers", h:`
+<div class="hero">
+  <p class="eyebrow"><b>tt-metal kernel dojo</b> · interactive walkthrough</p>
+  <h1>Circular<br>Buffers<span class="dim">.</span></h1>
+  <p class="sub">The queues that connect your kernels. Everything hangs off understanding
+  these properly — <em>including most of your bugs</em>. Six slides of this deck run a live
+  simulation of the actual dojo exercise kernels: step them, race them, deadlock them.</p>
+  <div class="api-chips">
+    <code class="c-t">cb_reserve_back()</code><code class="c-t">cb_push_back()</code>
+    <code class="c-a">cb_wait_front()</code><code class="c-a">cb_pop_front()</code>
+    <code>get_write_ptr()</code><code>get_read_ptr()</code>
+  </div>
+  <p class="hint"><kbd>→</kbd> next slide &nbsp;·&nbsp; <kbd>←</kbd> back &nbsp;·&nbsp;
+  on sim slides: <b>step</b> advances every processor by one instruction</p>
+</div>`},
+
+{t:"The stack — one Tensix core", h:`
+<div class="wrap">
+  <p class="eyebrow">02 · where a CB sits</p>
+  <h2>The stack: DRAM → NoC → three kernels → NoC → DRAM</h2>
+  <p class="lede">A Tensix core is <b>five</b> RISC-V processors sharing 1.4&nbsp;MB of L1 SRAM.
+  The reader (NCRISC) pulls tiles in over the NoC, compute (3&nbsp;× TRISC) transforms them,
+  the writer (BRISC) pushes results out. They never call each other — <b>circular buffers in L1
+  are the only thing connecting them.</b></p>
+  <div class="pipewrap"><div class="pipe">
+    <div class="pnode dram"><span class="nm">DRAM</span><span class="ds">src tensor<br>12 GB · 6 ch</span></div>
+    <div class="flow"><span class="lbl">NoC read</span><div class="track"><span class="dot-anim"></span><span class="dot-anim d2"></span></div><span class="lbl">~195 GB/s</span></div>
+    <div class="core">
+      <div class="pnode reader"><span class="nm">reader.cpp</span><span class="ds">NCRISC<br>data movement</span></div>
+      <div class="flow"><span class="lbl t">reserve · push</span><div class="track"><span class="dot-anim"></span></div><span class="lbl a">wait · pop</span></div>
+      <div class="cbnode"><svg class="ring" id="miniring1" width="64" height="64" viewBox="0 0 64 64"></svg><span class="nm">cb_in (L1)</span></div>
+      <div class="flow"><span class="lbl t">reserve · push</span><div class="track"><span class="dot-anim"></span></div><span class="lbl a">wait · pop</span></div>
+      <div class="pnode compute"><span class="nm">compute.cpp</span><span class="ds">TRISC 0/1/2<br>unpack · math · pack</span><span class="dstchip">DST ×8 tiles</span></div>
+      <div class="flow vio"><span class="lbl t">reserve · push</span><div class="track"><span class="dot-anim"></span></div><span class="lbl a">wait · pop</span></div>
+      <div class="cbnode"><svg class="ring vio" id="miniring2" width="64" height="64" viewBox="0 0 64 64"></svg><span class="nm">cb_out (L1)</span></div>
+      <div class="flow"><span class="lbl"></span><div class="track"><span class="dot-anim"></span></div><span class="lbl"></span></div>
+      <div class="pnode writer"><span class="nm">writer.cpp</span><span class="ds">BRISC<br>data movement</span></div>
+    </div>
+    <div class="flow out"><span class="lbl">NoC write</span><div class="track"><span class="dot-anim"></span><span class="dot-anim d2"></span></div><span class="lbl"></span></div>
+    <div class="pnode dram"><span class="nm">DRAM</span><span class="ds">dst tensor</span></div>
+  </div></div>
+  <div class="legend2">
+    <span><span class="sw" style="background:var(--teal)"></span><b>producer side</b> — reserve space, fill it, publish</span>
+    <span><span class="sw" style="background:var(--amber)"></span><b>consumer side</b> — wait for data, use it, release</span>
+    <span><b>32 CB slots per core</b>, by convention 0–7 in, 16–23 out</span>
+    <span><b>CBs are per-core & private</b> — cores never share one</span>
+  </div>
+  <p class="src-note">kernel_dojo/theory/02-the-chip.md · 04-circular-buffers.md</p>
+</div>`},
+
+{t:"Anatomy — a ring of pages", h:`
+<div class="wrap">
+  <p class="eyebrow">03 · anatomy</p>
+  <h2>A fixed ring of pages; two pointers that wrap</h2>
+  <p class="lede">A CB is defined by two numbers: <b>page size</b> (2048 B — one bfloat16 tile)
+  and <b>number of pages</b> (the depth, your double-buffering knob). The pointers chase each
+  other around the ring, so 4 pages can carry thousands of tiles without moving a byte.
+  Drive it yourself:</p>
+  <div class="demo3">
+    <div class="vizcol">
+      <svg class="ring" id="demoring" width="220" height="220" viewBox="0 0 220 220" role="img" aria-label="circular buffer ring"></svg>
+      <div style="display:flex;gap:12px">
+        <button class="bigbtn push" id="demopush">producer: push tile</button>
+        <button class="bigbtn pop" id="demopop">consumer: pop tile</button>
+      </div>
+    </div>
+    <div class="facts">
+      <div class="demomsg" id="demomsg">the ring is empty — the producer goes first</div>
+      <div class="factrow"><span class="k">pages (depth)</span><span class="v2">4 × 2048 B</span></div>
+      <div class="factrow"><span class="k">visible to consumer</span><span class="v2 t" id="demovis">0</span></div>
+      <div class="factrow"><span class="k">free for producer</span><span class="v2" id="demofree">4</span></div>
+      <div class="factrow"><span class="k">total pushed / popped</span><span class="v2" id="demotot">0 / 0</span></div>
+      <div class="factrow"><span class="k">tiles through the ring</span><span class="v2 g" id="demothru">0 — watch the pointers wrap past page 3</span></div>
+      <p style="color:var(--muted);font-size:13.5px;margin:6px 0 0;max-width:46ch">Depth 1 forces producer
+      and consumer to alternate. Depth 2 is <b>double buffering</b> — one page being filled while
+      the other is consumed. Deeper absorbs timing jitter, at the cost of L1.</p>
+    </div>
+  </div>
+</div>`},
+
+{t:"The four operations", h:`
+<div class="wrap">
+  <p class="eyebrow">04 · the api</p>
+  <h2>Four calls. Two of them block.</h2>
+  <p class="lede">Producer and consumer each get a two-step protocol. The first call of each
+  pair <b>blocks</b> — that's what keeps the kernels in step, and it's what hangs when your
+  counts are wrong.</p>
+  <table class="opstable">
+    <tr><th style="width:90px"></th><th>producer side <span class="t">(fills the CB)</span></th><th>consumer side <span class="a">(drains it)</span></th></tr>
+    <tr><td class="mono" style="color:var(--muted);font-size:11px">CLAIM<br>blocks ⏳</td>
+        <td><code class="t">cb_reserve_back(cb, n)</code><br><span style="color:var(--muted);font-size:13px">block until n pages are free</span></td>
+        <td><code class="a">cb_wait_front(cb, n)</code><br><span style="color:var(--muted);font-size:13px">block until n pages hold data</span></td></tr>
+    <tr><td class="mono" style="color:var(--muted);font-size:11px">LOCATE</td>
+        <td><code>get_write_ptr(cb)</code><br><span style="color:var(--muted);font-size:13px">address of the reserved run — <b>does not advance</b></span></td>
+        <td><code>get_read_ptr(cb)</code><br><span style="color:var(--muted);font-size:13px">address of the front of the visible window</span></td></tr>
+    <tr><td class="mono" style="color:var(--muted);font-size:11px">USE</td>
+        <td><span style="color:var(--muted);font-size:13px">NoC read lands a tile there — <code>noc_async_read_barrier()</code> <b>before</b> publishing</span></td>
+        <td><span style="color:var(--muted);font-size:13px">NoC write streams it out — <code>noc_async_write_barrier()</code> <b>before</b> releasing</span></td></tr>
+    <tr><td class="mono" style="color:var(--muted);font-size:11px">HAND OFF</td>
+        <td><code class="t">cb_push_back(cb, n)</code><br><span style="color:var(--muted);font-size:13px">publish — consumer can now see it</span></td>
+        <td><code class="a">cb_pop_front(cb, n)</code><br><span style="color:var(--muted);font-size:13px">release — producer can reuse the page</span></td></tr>
+  </table>
+  <p class="lede" style="margin-top:18px">Tile indices in compute calls are <b>relative to the
+  visible window</b>, not to your tensor: after <code>cb_wait_front(cb, 4)</code> the visible tiles
+  are 0–3, and after the pop the <em>next</em> four are 0–3 again. The window slides; the indices restart.</p>
+  <p class="src-note">kernel_dojo/theory/04-circular-buffers.md — “The four operations”</p>
+</div>`},
+
+{t:"Live · lesson 01 — tile copy", h:`
+<div class="wrap">
+  <p class="eyebrow">05 · live simulation · exercise 01_tile_copy</p>
+  <h2>Reader and writer, one CB, six tiles</h2>
+  <p class="lede">The real lesson-01 solution kernels, one instruction per step. NCRISC and BRISC
+  run <em>simultaneously</em> — each ⏵ step advances <b>both</b> by one instruction. Watch the
+  writer stall amber when the ring is empty, and the reader stall when it's full. Try depth 1:
+  they're forced to alternate.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="l01-step">⏵ step</button>
+    <button class="ctl" id="l01-play">▶ play</button>
+    <button class="ctl" id="l01-reset">↺ reset</button>
+    <span class="optgrp">CB depth
+      <button data-d="1">1</button><button data-d="2" class="on">2</button><button data-d="4">4</button>
+    </span>
+    <span class="sp"></span>
+    <span class="tickbox">cycle <b id="l01-tick">0</b></span>
+  </div>
+  <div class="hangbar" id="l01-hang"></div>
+  <div class="donebar" id="l01-done"></div>
+  <div class="simgrid">
+    <div class="pane" id="l01-rp"></div>
+    <div class="vizcol">
+      <div><div class="striplbl">DRAM · src tensor</div><div class="strip" id="l01-src"></div></div>
+      <div class="noclink" id="l01-nin">▼ NoC ▼</div>
+      <svg class="ring" id="l01-ring" width="190" height="190" viewBox="0 0 190 190"></svg>
+      <div class="cbtotals" id="l01-tot"></div>
+      <div class="noclink" id="l01-nout">▼ NoC ▼</div>
+      <div><div class="striplbl">DRAM · dst tensor</div><div class="strip" id="l01-dst"></div></div>
+    </div>
+    <div class="pane amberside" id="l01-wp"></div>
+  </div>
+  <div class="legend">
+    <span><span class="sw" style="background:var(--panel2)"></span>free</span>
+    <span><span class="sw" style="border-color:var(--teal);border-style:dashed"></span>reserved</span>
+    <span><span class="sw" style="background:color-mix(in srgb,var(--teal) 45%,transparent)"></span>NoC read in flight</span>
+    <span><span class="sw" style="background:var(--teal)"></span>visible (pushed)</span>
+    <span><span class="sw" style="background:var(--amber)"></span>draining out</span>
+    <span class="t">W = write ptr</span><span class="a">R = read ptr</span>
+  </div>
+  <p class="src-note">exercises/01_tile_copy/solution/{reader,writer}.cpp — verbatim loop bodies</p>
+</div>`},
+
+{t:"Live · lesson 02 — the compute pipeline", h:`
+<div class="wrap">
+  <p class="eyebrow">06 · live simulation · exercise 02_eltwise_unary</p>
+  <h2>Three kernels, two CBs, and the DST handshake</h2>
+  <p class="lede">Compute joins the party: <code>exp(x)</code> on every tile. The SFPU can't read
+  a CB directly, so each tile is staged into a <b>DST register</b>, transformed in place, and
+  packed out — under the four-call <code>tile_regs_*</code> handshake between the math and pack
+  processors. Note compute is <em>consumer of cb_in and producer of cb_out at once</em>.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="l02-step">⏵ step</button>
+    <button class="ctl" id="l02-play">▶ play</button>
+    <button class="ctl" id="l02-reset">↺ reset</button>
+    <span class="sp"></span>
+    <span class="tickbox">cycle <b id="l02-tick">0</b></span>
+  </div>
+  <div class="hangbar" id="l02-hang"></div>
+  <div class="donebar" id="l02-done"></div>
+  <div class="simgrid3">
+    <div class="pane" id="l02-rp"></div>
+    <div class="pane violetside" id="l02-cp"></div>
+    <div class="pane amberside" id="l02-wp"></div>
+  </div>
+  <div style="display:flex;gap:26px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:18px">
+    <div><div class="striplbl">DRAM src</div><div class="strip" id="l02-src"></div></div>
+    <div class="vizcol"><svg class="ring" id="l02-rin" width="130" height="130" viewBox="0 0 130 130"></svg><div class="cbcap">cb_in · <span id="l02-tin"></span></div></div>
+    <div class="dstbox">
+      <div class="striplbl">DST registers (8 usable)</div>
+      <div class="dstslots" id="l02-dst8"></div>
+      <div class="holder" id="l02-holder">free</div>
+    </div>
+    <div class="vizcol"><svg class="ring vio" id="l02-rout" width="130" height="130" viewBox="0 0 130 130"></svg><div class="cbcap">cb_out · <span id="l02-tout"></span></div></div>
+    <div><div class="striplbl">DRAM dst = exp(src)</div><div class="strip" id="l02-dst"></div></div>
+  </div>
+  <p class="src-note">exercises/02_eltwise_unary/solution/{reader,compute,writer}.cpp · theory/06-compute.md — one compute source, compiled three times for TRISC0/1/2</p>
+</div>`},
+
+{t:"Live · lesson 05 — batching & blocks", h:`
+<div class="wrap">
+  <p class="eyebrow">07 · live simulation · exercise 05_pipelining</p>
+  <h2>Work in blocks: one barrier for four tiles</h2>
+  <p class="lede">Same copy, but reserve/push <b>4 pages at a time</b>: four NoC reads go in
+  flight together and <em>one</em> barrier drains them, so their latencies overlap instead of
+  being paid one after another. Run both block sizes to the end and compare the cycle count.
+  Note <code>get_write_ptr</code> is called <b>once per block</b> — the stride arithmetic is manual.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="l05-step">⏵ step</button>
+    <button class="ctl" id="l05-play">▶ play</button>
+    <button class="ctl" id="l05-reset">↺ reset</button>
+    <span class="optgrp">block
+      <button data-b="1" class="on">1</button><button data-b="4">4</button>
+    </span>
+    <span class="optgrp" style="margin-left:8px">CB depth 8 · 8 tiles</span>
+    <span class="sp"></span>
+    <span class="tickbox" id="l05-res"></span>
+    <span class="tickbox">cycle <b id="l05-tick">0</b></span>
+  </div>
+  <div class="hangbar" id="l05-hang"></div>
+  <div class="donebar" id="l05-done"></div>
+  <div class="simgrid">
+    <div class="pane" id="l05-rp"></div>
+    <div class="vizcol">
+      <div><div class="striplbl">DRAM · src</div><div class="strip" id="l05-src"></div></div>
+      <div class="noclink" id="l05-nin">▼ NoC ▼</div>
+      <svg class="ring" id="l05-ring" width="200" height="200" viewBox="0 0 200 200"></svg>
+      <div class="cbtotals" id="l05-tot"></div>
+      <div class="noclink" id="l05-nout">▼ NoC ▼</div>
+      <div><div class="striplbl">DRAM · dst</div><div class="strip" id="l05-dst"></div></div>
+    </div>
+    <div class="pane amberside" id="l05-wp"></div>
+  </div>
+  <p class="src-note">exercises/05_pipelining/solution/{reader,writer}.cpp — whenever you work in blocks of n, the CB needs ≥ n pages (2n to double-buffer). DST caps blocks at 8.</p>
+</div>`},
+
+{t:"Pitfalls — break it on purpose", h:`
+<div class="wrap">
+  <p class="eyebrow">08 · pitfalls · the three that catch everyone</p>
+  <h2>Break it on purpose</h2>
+  <p class="lede">Each tab is a real bug from the theory chapter, running live. Two of them hang —
+  press play and watch <em>which call</em> blocks and <em>why</em>. One is worse: it finishes,
+  silently, with wrong data.</p>
+  <div class="tabs">
+    <button class="on" data-tab="0">① wait &gt; CB size → instant deadlock</button>
+    <button data-tab="1">② push without pop → fills up & hangs</button>
+    <button data-tab="2">③ get_write_ptr in a loop → silent garbage</button>
+  </div>
+
+  <div class="tabpane on" id="pfA">
+    <div class="simbar">
+      <button class="ctl primary" id="pfA-step">⏵ step</button>
+      <button class="ctl" id="pfA-play">▶ play</button>
+      <button class="ctl" id="pfA-reset">↺ reset</button>
+      <span class="sp"></span><span class="tickbox">cycle <b id="pfA-tick">0</b></span>
+    </div>
+    <div class="hangbar" id="pfA-hang"></div><div class="donebar" id="pfA-done"></div>
+    <div class="simgrid">
+      <div class="pane" id="pfA-rp"></div>
+      <div class="vizcol"><svg class="ring" id="pfA-ring" width="170" height="170" viewBox="0 0 170 170"></svg>
+        <div class="cbtotals" id="pfA-tot"></div>
+        <p style="color:var(--muted);font-size:13px;max-width:38ch;text-align:center">A 2-page CB will <b>never</b>
+        have 4 free pages or 4 visible tiles. Both calls block on the very first iteration, forever.</p></div>
+      <div class="pane amberside" id="pfA-wp"></div>
+    </div>
+  </div>
+
+  <div class="tabpane" id="pfB">
+    <div class="simbar">
+      <button class="ctl primary" id="pfB-step">⏵ step</button>
+      <button class="ctl" id="pfB-play">▶ play</button>
+      <button class="ctl" id="pfB-reset">↺ reset</button>
+      <span class="sp"></span><span class="tickbox">cycle <b id="pfB-tick">0</b></span>
+    </div>
+    <div class="hangbar" id="pfB-hang"></div><div class="donebar" id="pfB-done"></div>
+    <div class="simgrid">
+      <div class="pane" id="pfB-rp"></div>
+      <div class="vizcol">
+        <div><div class="striplbl">DRAM src</div><div class="strip" id="pfB-src"></div></div>
+        <svg class="ring" id="pfB-ring" width="170" height="170" viewBox="0 0 170 170"></svg>
+        <div class="cbtotals" id="pfB-tot"></div>
+        <div><div class="striplbl">DRAM dst — every tile is tile 0</div><div class="strip" id="pfB-dst"></div></div>
+      </div>
+      <div class="pane amberside" id="pfB-wp"></div>
+    </div>
+    <p class="lede" style="margin-top:14px">Two failures from one missing call: the front of the window
+    never advances (<b>duplicates of tile 0</b>), and pages are never freed, so the reader jams once
+    the ring fills. Push total ≠ pop total — the accounting rule broken, made visible.</p>
+  </div>
+
+  <div class="tabpane" id="pfC">
+    <div class="simbar">
+      <button class="ctl primary" id="pfC-step">⏵ step</button>
+      <button class="ctl" id="pfC-play">▶ play</button>
+      <button class="ctl" id="pfC-reset">↺ reset</button>
+      <span class="sp"></span><span class="tickbox">cycle <b id="pfC-tick">0</b></span>
+    </div>
+    <div class="hangbar" id="pfC-hang"></div><div class="donebar" id="pfC-done"></div>
+    <div class="simgrid">
+      <div class="pane" id="pfC-rp"></div>
+      <div class="vizcol">
+        <div><div class="striplbl">DRAM src</div><div class="strip" id="pfC-src"></div></div>
+        <svg class="ring" id="pfC-ring" width="170" height="170" viewBox="0 0 170 170"></svg>
+        <div class="cbtotals" id="pfC-tot"></div>
+        <div><div class="striplbl">DRAM dst — expected 0 1 2 3</div><div class="strip" id="pfC-dst"></div></div>
+      </div>
+      <div class="pane amberside" id="pfC-wp"></div>
+    </div>
+    <p class="lede" style="margin-top:14px"><code>get_write_ptr</code> keeps returning the <b>start of the
+    reserved run</b> until you push. All four reads land on page 0, each overwriting the last; pages 1–3
+    ship out never written. No hang, no error — just “the first tile is wrong and the rest are garbage.”
+    Stride manually: <code>base + t * tile_bytes</code>.</p>
+  </div>
+</div>`},
+
+{t:"The accounting rule", h:`
+<div class="wrap">
+  <p class="eyebrow">09 · the rule that explains every hang</p>
+  <h2>The accounting rule</h2>
+  <blockquote class="rule">Over the life of the kernel, every <b>reserve</b> must have a matching
+  <b>push</b>, and every <b>wait</b> a matching <b>pop</b> — <b>and the totals must agree between the
+  kernels sharing the buffer.</b></blockquote>
+  <p class="lede">Not per iteration — a producer may push 4 at a time while the consumer pops 1 at a
+  time. Only the totals must reconcile. The mechanical check when something hangs: count total pages
+  pushed and total pages popped over the whole run. If they differ, that's your bug.</p>
+  <div class="twocol">
+    <div>
+      <h3 style="font-size:15px;margin-bottom:10px">Diagnosing a hang</h3>
+      <table class="opstable">
+        <tr><th>symptom</th><th>likely cause</th></tr>
+        <tr><td>hangs immediately, first iteration</td><td>waiting for more pages than the CB has <span class="r">(pitfall ①)</span></td></tr>
+        <tr><td>hangs after a few iterations</td><td>reserve/push counts unequal — buffer fills up <span class="r">(pitfall ②)</span></td></tr>
+        <tr><td>hangs at the end</td><td>one kernel loops more times than another</td></tr>
+        <tr><td>hangs only at large sizes</td><td>fine at depth 2 by luck; the imbalance shows once the buffer fills</td></tr>
+        <tr><td>zeros / garbage, no hang</td><td>missing NoC barrier, or <code>get_write_ptr</code> reused <span class="r">(pitfall ③)</span></td></tr>
+      </table>
+    </div>
+    <div>
+      <h3 style="font-size:15px;margin-bottom:10px">Now go break real hardware</h3>
+      <div class="gonext">
+        <span class="c"># the background reading</span><br>
+        ./dojo theory 04<br>
+        <span class="c"># lesson 01: write these two kernels yourself</span><br>
+        ./dojo info 01 &nbsp;&nbsp;./dojo test 01<br>
+        <span class="c"># when it hangs (it will), re-read your cb_* calls in pairs</span><br>
+        ./dojo bench 05 <span class="c"># the block-size curve, on silicon</span>
+      </div>
+      <p style="color:var(--muted);font-size:13.5px;margin-top:14px">Everything in this deck is drawn
+      from <span class="mono">kernel_dojo/theory/04-circular-buffers.md</span> and the exercise solution
+      kernels. The simulator's “cycles” are instruction steps, not silicon time — for the real numbers,
+      <span class="mono">./dojo bench</span> reads the device profiler.</p>
+    </div>
+  </div>
+</div>`}
+];
+
+/* ============================== CB model ============================== */
+function newCB(cap){return {capacity:cap,
+  pages:Array.from({length:cap},()=>({state:"free",tile:null})),
+  rd:0, wrRes:0, wrPush:0, free:cap, visible:0, pushed:0, popped:0};}
+const pageAt=(cb,i)=>cb.pages[((i%cb.capacity)+cb.capacity)%cb.capacity];
+
+function cbReserve(cb,n){
+  if(n>cb.capacity) return {blocked:"cb_reserve_back("+n+") can NEVER succeed — the CB only has "+cb.capacity+" pages"};
+  if(cb.free<n) return {blocked:"cb_reserve_back — need "+n+" free, have "+cb.free};
+  for(let k=0;k<n;k++) pageAt(cb,cb.wrRes+k).state="reserved";
+  cb.wrRes+=n; cb.free-=n; return null;
+}
+function cbPush(cb,n){
+  for(let k=0;k<n;k++) pageAt(cb,cb.wrPush+k).state="ready";
+  cb.wrPush+=n; cb.visible+=n; cb.pushed+=n; return null;
+}
+function cbWait(cb,n){
+  if(n>cb.capacity) return {blocked:"cb_wait_front("+n+") can NEVER succeed — the CB only has "+cb.capacity+" pages"};
+  if(cb.visible<n) return {blocked:"cb_wait_front — need "+n+" visible, have "+cb.visible};
+  return null;
+}
+function cbPop(cb,n){
+  for(let k=0;k<n;k++){const p=pageAt(cb,cb.rd+k); p.state="free"; p.tile=null;}
+  cb.rd+=n; cb.visible-=n; cb.free+=n; cb.popped+=n; return null;
+}
+function barrierReads(cb,srcArr){
+  for(const p of cb.pages) if(p.state==="filling") p.state="full";
+  if(srcArr) for(let i=0;i<srcArr.length;i++) if(srcArr[i].state==="reading") srcArr[i].state="read";
+}
+function barrierWrites(cb,dstArr){
+  for(const p of cb.pages) if(p.state==="draining") p.state="ready";
+  if(dstArr) for(const c of dstArr) if(c.state==="writing") c.state="written";
+}
+
+/* ============================== sim engine ============================== */
+const allSims=[];
+class Sim{
+  constructor(id,build,render){this.id=id;this.buildFn=build;this.renderFn=render;this.timer=null;allSims.push(this);this.reset();}
+  reset(){this.stopPlay();const s=this.buildFn();this.kernels=s.kernels;this.state=s;this.tick=0;this.stall=0;this.hang=false;this.render();}
+  get running(){return this.kernels.some(k=>!k.done);}
+  step(){
+    if(this.hang||!this.running) return;
+    let progressed=false;
+    for(const k of this.kernels){
+      if(k.done) continue;
+      const ins=k.program[k.pc];
+      const r=ins.run(k,this.state)||{};
+      if(r.blocked){k.blocked=r.blocked;}
+      else{k.blocked=null;progressed=true;if(!r.stay&&!r.jumped&&!k.done)k.pc++;}
+    }
+    this.tick++;
+    if(!progressed){this.stall++;if(this.stall>=4){this.hang=true;this.stopPlay();}}
+    else this.stall=0;
+    if(!this.running){this.stopPlay();if(this.onDone)this.onDone(this);}
+    this.render();
+  }
+  render(){this.renderFn(this);}
+  playToggle(){
+    if(this.timer){this.stopPlay();}
+    else{
+      if(this.hang||!this.running) this.reset();
+      this.timer=setInterval(()=>{this.step();if(this.hang||!this.running)this.stopPlay();},420);
+      if(this.playBtn)this.playBtn.textContent="⏸ pause";
+    }
+  }
+  stopPlay(){if(this.timer){clearInterval(this.timer);this.timer=null;}if(this.playBtn)this.playBtn.textContent="▶ play";}
+}
+function wireSim(sim,prefix){
+  $(prefix+"-step").onclick=()=>{sim.stopPlay();sim.step();};
+  sim.playBtn=$(prefix+"-play");
+  sim.playBtn.onclick=()=>sim.playToggle();
+  $(prefix+"-reset").onclick=()=>sim.reset();
+}
+
+/* ============================== render helpers ============================== */
+function paneHTML(k){
+  const cur=(!k.done)?k.program[k.pc].line:-1;
+  const lines=k.lines.map((ln,idx)=>{
+    let cls="cl";
+    if(idx===cur) cls+=k.blocked?" cl-blk":" cl-cur";
+    return '<div class="'+cls+'">'+(esc(ln)||" ")+"</div>";
+  }).join("");
+  const st=k.done?'<span class="st-done">✓ kernel_main returned</span>'
+    :k.blocked?'<span class="st-blk">⏳ blocked: '+esc(k.blocked)+"</span>"
+    :'<span class="st-run">running · i = '+k.i+"</span>";
+  return '<div class="pane-hd"><span class="kname">'+k.name+'</span><span class="proc proc-'+k.color+'">'+k.proc+'</span></div>'
+    +'<pre class="code">'+lines+'</pre><div class="pane-ft">'+st+"</div>";
+}
+function pol(cx,cy,r,aDeg){const a=aDeg*Math.PI/180;return [cx+r*Math.cos(a),cy+r*Math.sin(a)];}
+function arcPath(cx,cy,r0,r1,a0,a1){
+  const [x0,y0]=pol(cx,cy,r1,a0),[x1,y1]=pol(cx,cy,r1,a1),
+        [x2,y2]=pol(cx,cy,r0,a1),[x3,y3]=pol(cx,cy,r0,a0);
+  const lg=(a1-a0)>180?1:0;
+  return "M"+x0.toFixed(1)+" "+y0.toFixed(1)+" A"+r1+" "+r1+" 0 "+lg+" 1 "+x1.toFixed(1)+" "+y1.toFixed(1)
+    +" L"+x2.toFixed(1)+" "+y2.toFixed(1)+" A"+r0+" "+r0+" 0 "+lg+" 0 "+x3.toFixed(1)+" "+y3.toFixed(1)+" Z";
+}
+function drawRing(svgId,cb,opts){
+  const svg=(typeof svgId==="string")?$(svgId):svgId; if(!svg) return;
+  const o=opts||{};
+  const size=svg.viewBox.baseVal.width||parseFloat(svg.getAttribute("width"));
+  const showPtr=!o.noPtr&&cb.capacity>1&&size>=160;
+  const cx=size/2,cy=size/2,r1=size/2-(showPtr?16:4),r0=r1*0.58;
+  const cap=cb.capacity;let out="";
+  if(cap===1){
+    const p=cb.pages[0];
+    out+='<circle cx="'+cx+'" cy="'+cy+'" r="'+((r0+r1)/2)+'" fill="none" stroke-width="'+(r1-r0)+'" class="pg pg-'+p.state+'" style="fill:none"/>';
+    if(p.tile!==null){const [tx,ty]=pol(cx,cy,(r0+r1)/2,-90);out+='<text x="'+tx+'" y="'+ty+'" class="pgt">'+p.tile+"</text>";}
+  }else{
+    const gap=Math.min(5,360/cap*0.06);
+    for(let i=0;i<cap;i++){
+      const a0=-90+i*360/cap+gap,a1=-90+(i+1)*360/cap-gap;
+      const p=cb.pages[i];
+      out+='<path d="'+arcPath(cx,cy,r0,r1,a0,a1)+'" class="pg pg-'+p.state+'"/>';
+      const am=(a0+a1)/2,[tx,ty]=pol(cx,cy,(r0+r1)/2,am);
+      const lbl=p.tile!==null?p.tile:(p.state==="free"?"":"·");
+      const tcls=(p.state==="ready"||p.state==="draining")?"pgt":"pgt pg-free-t";
+      if(lbl!=="")out+='<text x="'+tx.toFixed(1)+'" y="'+ty.toFixed(1)+'" class="'+tcls+'">'+lbl+"</text>";
+    }
+    if(showPtr){
+      const slotMid=idx=>-90+((((idx%cap)+cap)%cap)+0.5)*360/cap;
+      const wAng=slotMid(cb.wrRes),rAng=slotMid(cb.rd);
+      const [wlx,wly]=pol(cx,cy,r1+9,wAng);
+      const [rlx,rly]=pol(cx,cy,Math.max(r0-11,10),rAng);
+      out+='<text x="'+wlx.toFixed(1)+'" y="'+wly.toFixed(1)+'" class="ptr ptr-wr">W▸</text>'
+         +'<text x="'+rlx.toFixed(1)+'" y="'+rly.toFixed(1)+'" class="ptr ptr-rd">R</text>';
+    }
+  }
+  if(!o.noCenter){
+    out+='<text x="'+cx+'" y="'+(cy-3)+'" class="ctr-n">'+cb.visible+"/"+cap+"</text>"
+       +'<text x="'+cx+'" y="'+(cy+13)+'" class="ctr-l">visible</text>';
+  }
+  svg.innerHTML=out;
+}
+function stripHTML(arr,vio){
+  return arr.map((c,i)=>{
+    let cls="tile t-"+c.state; if(c.wrong)cls+=" t-wrong"; if(vio&&c.state==="written")cls+=" vio";
+    let lbl=(c.val!==undefined&&c.val!==null)?c.val:(c.state==="empty"?"·":(c.state==="idle"||c.state==="reading"||c.state==="read")?i:"?");
+    if(c.val===null)lbl="?";
+    return '<div class="'+cls+'" title="tile '+i+'">'+lbl+"</div>";
+  }).join("");
+}
+function totalsHTML(cb){
+  return "pushed <b>"+cb.pushed+"</b> · popped <b>"+cb.popped+"</b> · free <b>"+cb.free+"</b>";
+}
+function hangHTML(where){
+  return "<b>⚠ device hang</b> — every processor is blocked and no push/pop can ever unblock them. "
+    +"In the dojo this test fails after 30 s with “device hang”. "+(where||"");
+}
+
+/* ============================== deck plumbing (build DOM before sims render) ============================== */
+const deck=$("deck"),dots=$("dots");
+SLIDES.forEach((s,i)=>{
+  const sec=document.createElement("section");
+  sec.className="slide";sec.innerHTML=s.h;deck.appendChild(sec);
+  const d=document.createElement("button");
+  d.title=s.t;d.onclick=()=>go(i);dots.appendChild(d);
+});
+let cur=0;
+function go(i){
+  cur=Math.max(0,Math.min(SLIDES.length-1,i));
+  document.querySelectorAll(".slide").forEach((el,j)=>el.classList.toggle("active",j===cur));
+  document.querySelectorAll("#dots button").forEach((el,j)=>el.classList.toggle("on",j===cur));
+  $("pgnum").textContent=(cur+1)+"/"+SLIDES.length;
+  $("barTitle").textContent=SLIDES[cur].t;
+  allSims.forEach(s=>s.stopPlay());
+}
+$("prevb").onclick=()=>go(cur-1);
+$("nextb").onclick=()=>go(cur+1);
+addEventListener("keydown",e=>{
+  if(e.key==="ArrowRight"||e.key==="PageDown")go(cur+1);
+  else if(e.key==="ArrowLeft"||e.key==="PageUp")go(cur-1);
+});
+go(0);
+
+/* ============================== slide 2 mini rings ============================== */
+function miniRing(id){
+  const cb=newCB(4);
+  cbReserve(cb,2);cb.pages[0].tile=0;cb.pages[1].tile=1;cbPush(cb,2);
+  drawRing(id,cb,{noCenter:true});
+}
+
+/* ============================== slide 3 manual demo ============================== */
+const demo={cb:newCB(4),next:0};
+function renderDemo(msg,kind){
+  drawRing("demoring",demo.cb);
+  $("demovis").textContent=demo.cb.visible;
+  $("demofree").textContent=demo.cb.free;
+  $("demotot").textContent=demo.cb.pushed+" / "+demo.cb.popped;
+  $("demothru").textContent=demo.cb.pushed<=4?demo.cb.pushed+(demo.cb.pushed===4?" — the ring is about to wrap":""):demo.cb.pushed+" tiles through 4 pages of memory";
+  if(msg!==undefined){const m=$("demomsg");m.textContent=msg;m.className="demomsg "+(kind||"");}
+}
+function demoPush(){
+  const cb=demo.cb;
+  if(cb.free===0){renderDemo("cb_reserve_back(cb, 1) blocks — 0 free pages. The producer stalls right here until the consumer pops.","blk");return;}
+  cbReserve(cb,1);
+  const slot=((cb.wrPush%4)+4)%4;
+  const p=pageAt(cb,cb.wrPush);p.tile=demo.next;p.state="full";
+  cbPush(cb,1);
+  renderDemo("cb_push_back → tile "+demo.next+" published in page "+slot+(cb.pushed>4?"  (page reused — that's the wrap)":""),"ok");
+  demo.next++;
+}
+function demoPop(){
+  const cb=demo.cb;
+  if(cb.visible===0){renderDemo("cb_wait_front(cb, 1) blocks — 0 pages visible. The consumer stalls until the producer pushes.","blk");return;}
+  const t=pageAt(cb,cb.rd).tile,slot=((cb.rd%4)+4)%4;
+  cbPop(cb,1);
+  renderDemo("cb_pop_front → tile "+t+" released from page "+slot+", producer may reuse it","ok");
+}
+
+/* ============================== lesson 01 sim ============================== */
+const L01_N=6;let l01depth=2;
+function readerLines1(){return [
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_reserve_back(cb, 1);",
+"    uint32_t addr = get_write_ptr(cb);",
+"    noc_async_read_page(i, src, addr);",
+"    noc_async_read_barrier();",
+"    cb_push_back(cb, 1);",
+"}"];}
+function writerLines1(){return [
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_wait_front(cb, 1);",
+"    uint32_t addr = get_read_ptr(cb);",
+"    noc_async_write_page(i, dst, addr);",
+"    noc_async_write_barrier();",
+"    cb_pop_front(cb, 1);",
+"}"];}
+function loopIns(n,step){return {line:0,run:k=>{k.i+=(step||1);if(k.i<n){k.pc=0;return{jumped:true};}k.done=true;return{jumped:true};}};}
+
+function buildCopySim(n,depth){
+  const cb=newCB(depth);
+  const src=Array.from({length:n},()=>({state:"idle"}));
+  const dst=Array.from({length:n},()=>({state:"empty"}));
+  const reader={name:"reader.cpp",proc:"NCRISC · producer",color:"teal",i:0,pc:0,done:false,blocked:null,
+    lines:readerLines1(),
+    program:[
+      {line:1,run:()=>cbReserve(cb,1)},
+      {line:2,run:()=>null},
+      {line:3,run:k=>{const p=pageAt(cb,cb.wrPush);p.state="filling";p.tile=k.i;src[k.i].state="reading";return null;}},
+      {line:4,run:()=>{barrierReads(cb,src);return null;}},
+      {line:5,run:()=>cbPush(cb,1)},
+      loopIns(n)
+    ]};
+  const writer={name:"writer.cpp",proc:"BRISC · consumer",color:"amber",i:0,pc:0,done:false,blocked:null,
+    lines:writerLines1(),
+    program:[
+      {line:1,run:()=>cbWait(cb,1)},
+      {line:2,run:()=>null},
+      {line:3,run:k=>{const p=pageAt(cb,cb.rd);p.state="draining";dst[k.i]={state:"writing",val:p.tile};return null;}},
+      {line:4,run:()=>{barrierWrites(cb,dst);return null;}},
+      {line:5,run:()=>cbPop(cb,1)},
+      loopIns(n)
+    ]};
+  return {kernels:[reader,writer],cb,src,dst};
+}
+function renderCopySim(sim,prefix,ringId){
+  const s=sim.state;
+  $(prefix+"-rp").innerHTML=paneHTML(sim.kernels[0]);
+  $(prefix+"-wp").innerHTML=paneHTML(sim.kernels[1]);
+  drawRing(ringId,s.cb);
+  $(prefix+"-src").innerHTML=stripHTML(s.src);
+  const dstWrong=s.dst.map((c,i)=>({...c,wrong:c.state==="written"&&c.val!==i}));
+  $(prefix+"-dst").innerHTML=stripHTML(dstWrong);
+  $(prefix+"-tot").innerHTML=totalsHTML(s.cb);
+  $(prefix+"-tick").textContent=sim.tick;
+  const nin=$(prefix+"-nin"),nout=$(prefix+"-nout");
+  if(nin)nin.className="noclink"+(s.src.some(c=>c.state==="reading")?" on":"");
+  if(nout)nout.className="noclink"+(s.dst.some(c=>c.state==="writing")?" on amb":"");
+  $(prefix+"-hang").className="hangbar"+(sim.hang?" on":"");
+  if(sim.hang)$(prefix+"-hang").innerHTML=hangHTML();
+  const doneEl=$(prefix+"-done");
+  if(doneEl){
+    const ok=!sim.running&&!sim.hang;
+    doneEl.className="donebar"+(ok?" on":"");
+    if(ok){
+      const wrong=dstWrong.filter(c=>c.wrong||c.val===null).length;
+      doneEl.innerHTML=wrong===0
+        ?"✓ both kernels returned in <b>"+sim.tick+"</b> cycles · pushed "+s.cb.pushed+" = popped "+s.cb.popped+" — the accounting reconciles"
+        :"<span class='r'>✗ finished with no error — but "+wrong+" of "+s.dst.length+" output tiles are wrong. This is the dangerous kind of bug.</span>";
+    }
+  }
+}
+const l01=new Sim("l01",()=>buildCopySim(L01_N,l01depth),s=>renderCopySim(s,"l01","l01-ring"));
+
+/* ============================== lesson 02 sim ============================== */
+const L02_N=4;
+function buildL02(){
+  const cbin=newCB(2),cbout=newCB(2);
+  const src=Array.from({length:L02_N},()=>({state:"idle"}));
+  const dst=Array.from({length:L02_N},()=>({state:"empty"}));
+  const dstRegs={slots:Array.from({length:8},()=>null),holder:"free"};
+  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",i:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_reserve_back(cb_in, 1);",
+"    uint32_t addr = get_write_ptr(cb_in);",
+"    noc_async_read_page(i, src, addr);",
+"    noc_async_read_barrier();",
+"    cb_push_back(cb_in, 1);",
+"}"],
+    program:[
+      {line:1,run:()=>cbReserve(cbin,1)},
+      {line:2,run:()=>null},
+      {line:3,run:k=>{const p=pageAt(cbin,cbin.wrPush);p.state="filling";p.tile=k.i;src[k.i].state="reading";return null;}},
+      {line:4,run:()=>{barrierReads(cbin,src);return null;}},
+      {line:5,run:()=>cbPush(cbin,1)},
+      loopIns(L02_N)
+    ]};
+  const compute={name:"compute.cpp",proc:"TRISC 0·1·2",color:"violet",i:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_wait_front(cb_in, 1);",
+"    tile_regs_acquire();     // MATH claims DST (zeroes it)",
+"    copy_tile(cb_in, 0, dst); // SFPU can't read a CB",
+"    exp_tile(dst);",
+"    tile_regs_commit();      // math done",
+"    cb_reserve_back(cb_out, 1);",
+"    tile_regs_wait();        // PACK waits for commit",
+"    pack_tile(dst, cb_out);",
+"    tile_regs_release();     // DST free again",
+"    cb_push_back(cb_out, 1);",
+"    cb_pop_front(cb_in, 1);",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cbin,1)},
+      {line:2,run:()=>{dstRegs.holder="math";dstRegs.slots=Array.from({length:8},()=>null);return null;}},
+      {line:3,run:k=>{dstRegs.slots[0]={t:k.i,exp:false};return null;}},
+      {line:4,run:()=>{if(dstRegs.slots[0])dstRegs.slots[0].exp=true;return null;}},
+      {line:5,run:()=>{dstRegs.holder="committed";return null;}},
+      {line:6,run:()=>cbReserve(cbout,1)},
+      {line:7,run:()=>{dstRegs.holder="pack";return null;}},
+      {line:8,run:k=>{const p=pageAt(cbout,cbout.wrPush);p.tile=k.i;p.state="full";return null;}},
+      {line:9,run:()=>{dstRegs.holder="free";return null;}},
+      {line:10,run:()=>cbPush(cbout,1)},
+      {line:11,run:()=>cbPop(cbin,1)},
+      loopIns(L02_N)
+    ]};
+  const writer={name:"writer.cpp",proc:"BRISC",color:"amber",i:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_wait_front(cb_out, 1);",
+"    uint32_t addr = get_read_ptr(cb_out);",
+"    noc_async_write_page(i, dst, addr);",
+"    noc_async_write_barrier();",
+"    cb_pop_front(cb_out, 1);",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cbout,1)},
+      {line:2,run:()=>null},
+      {line:3,run:k=>{const p=pageAt(cbout,cbout.rd);p.state="draining";dst[k.i]={state:"writing",val:p.tile};return null;}},
+      {line:4,run:()=>{barrierWrites(cbout,dst);return null;}},
+      {line:5,run:()=>cbPop(cbout,1)},
+      loopIns(L02_N)
+    ]};
+  return {kernels:[reader,compute,writer],cbin,cbout,src,dst,dstRegs};
+}
+function renderL02(sim){
+  const s=sim.state;
+  $("l02-rp").innerHTML=paneHTML(sim.kernels[0]);
+  $("l02-cp").innerHTML=paneHTML(sim.kernels[1]);
+  $("l02-wp").innerHTML=paneHTML(sim.kernels[2]);
+  drawRing("l02-rin",s.cbin);drawRing("l02-rout",s.cbout);
+  $("l02-tin").innerHTML="pushed "+s.cbin.pushed+" · popped "+s.cbin.popped;
+  $("l02-tout").innerHTML="pushed "+s.cbout.pushed+" · popped "+s.cbout.popped;
+  $("l02-src").innerHTML=stripHTML(s.src);
+  $("l02-dst").innerHTML=stripHTML(s.dst,true);
+  $("l02-dst8").innerHTML=s.dstRegs.slots.map((sl,i)=>
+    '<div class="dsts'+(sl?" on":"")+'" title="dst['+i+']">'+(sl?(sl.exp?"e":"")+sl.t:i)+"</div>").join("");
+  const h=$("l02-holder");h.textContent={free:"DST: free",math:"DST: MATH holds",committed:"DST: committed",pack:"DST: PACK holds"}[s.dstRegs.holder];
+  h.className="holder "+(s.dstRegs.holder==="free"?"":s.dstRegs.holder);
+  $("l02-tick").textContent=sim.tick;
+  $("l02-hang").className="hangbar"+(sim.hang?" on":"");
+  if(sim.hang)$("l02-hang").innerHTML=hangHTML();
+  const ok=!sim.running&&!sim.hang;
+  $("l02-done").className="donebar"+(ok?" on":"");
+  if(ok)$("l02-done").innerHTML="✓ all three kernels returned in <b>"+sim.tick+"</b> cycles. cb_in: "
+    +s.cbin.pushed+" pushed = "+s.cbin.popped+" popped · cb_out: "+s.cbout.pushed+" = "+s.cbout.popped
+    +" — two buffers, two ledgers, both reconcile.";
+}
+const l02=new Sim("l02",buildL02,renderL02);
+
+/* ============================== lesson 05 sim ============================== */
+const L05_N=8;let l05block=1;const l05res={};
+function buildL05(){
+  const B=l05block,cb=newCB(8);
+  const src=Array.from({length:L05_N},()=>({state:"idle"}));
+  const dst=Array.from({length:L05_N},()=>({state:"empty"}));
+  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",i:0,t:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i += block) {   // block = "+B,
+"    cb_reserve_back(cb, block);",
+"    uint32_t base = get_write_ptr(cb);  // ONCE per block",
+"    for (uint32_t t = 0; t < block; t++)",
+"        noc_async_read_page(i + t, src,",
+"                            base + t * tile_bytes);",
+"    noc_async_read_barrier();  // one barrier, block reads",
+"    cb_push_back(cb, block);",
+"}"],
+    program:[
+      {line:1,run:()=>cbReserve(cb,B)},
+      {line:2,run:k=>{k.t=0;return null;}},
+      {line:4,run:k=>{const p=pageAt(cb,cb.wrPush+k.t);p.state="filling";p.tile=k.i+k.t;src[k.i+k.t].state="reading";k.t++;return k.t<B?{stay:true}:null;}},
+      {line:6,run:()=>{barrierReads(cb,src);return null;}},
+      {line:7,run:()=>cbPush(cb,B)},
+      loopIns(L05_N,B)
+    ]};
+  const writer={name:"writer.cpp",proc:"BRISC",color:"amber",i:0,t:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i += block) {",
+"    cb_wait_front(cb, block);",
+"    uint32_t base = get_read_ptr(cb);",
+"    for (uint32_t t = 0; t < block; t++)",
+"        noc_async_write_page(i + t, dst,",
+"                             base + t * tile_bytes);",
+"    noc_async_write_barrier();  // drains all block writes",
+"    cb_pop_front(cb, block);",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cb,B)},
+      {line:2,run:k=>{k.t=0;return null;}},
+      {line:4,run:k=>{const p=pageAt(cb,cb.rd+k.t);p.state="draining";dst[k.i+k.t]={state:"writing",val:p.tile};k.t++;return k.t<B?{stay:true}:null;}},
+      {line:6,run:()=>{barrierWrites(cb,dst);return null;}},
+      {line:7,run:()=>cbPop(cb,B)},
+      loopIns(L05_N,B)
+    ]};
+  return {kernels:[reader,writer],cb,src,dst};
+}
+function renderL05(sim){
+  renderCopySim(sim,"l05","l05-ring");
+  const parts=[];
+  if(l05res[1]!==undefined)parts.push("block 1 → <b>"+l05res[1]+"</b> cycles");
+  if(l05res[4]!==undefined)parts.push("block 4 → <b>"+l05res[4]+"</b> cycles");
+  $("l05-res").innerHTML=parts.join(" · ")+(parts.length===2?" <span class='g'>✓</span>":"");
+}
+const l05=new Sim("l05",buildL05,renderL05);
+l05.onDone=s=>{l05res[l05block]=s.tick;};
+
+/* ============================== pitfalls ============================== */
+function buildPfA(){
+  const cb=newCB(2);
+  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",i:0,pc:0,done:false,blocked:null,
+    lines:["// host created this CB with n_pages = 2","","cb_reserve_back(cb, 4);  // ← 4 > 2","..."],
+    program:[{line:2,run:()=>cbReserve(cb,4)}]};
+  const writer={name:"writer.cpp",proc:"BRISC",color:"amber",i:0,pc:0,done:false,blocked:null,
+    lines:["// host created this CB with n_pages = 2","","cb_wait_front(cb, 4);    // ← 4 > 2","..."],
+    program:[{line:2,run:()=>cbWait(cb,4)}]};
+  return {kernels:[reader,writer],cb};
+}
+function renderPfA(sim){
+  const s=sim.state;
+  $("pfA-rp").innerHTML=paneHTML(sim.kernels[0]);
+  $("pfA-wp").innerHTML=paneHTML(sim.kernels[1]);
+  drawRing("pfA-ring",s.cb);
+  $("pfA-tot").innerHTML=totalsHTML(s.cb);
+  $("pfA-tick").textContent=sim.tick;
+  $("pfA-hang").className="hangbar"+(sim.hang?" on":"");
+  if(sim.hang)$("pfA-hang").innerHTML=hangHTML("Symptom row 1 of the diagnosis table: <em>hangs immediately, first iteration</em>.");
+}
+const pfA=new Sim("pfA",buildPfA,renderPfA);
+
+function buildPfB(){
+  const base=buildCopySim(6,2);
+  const cb=base.cb,dst=base.dst;
+  const writer={name:"writer.cpp",proc:"BRISC",color:"amber",i:0,pc:0,done:false,blocked:null,
+    lines:[
+"for (uint32_t i = 0; i < n_tiles; i++) {",
+"    cb_wait_front(cb, 1);",
+"    uint32_t addr = get_read_ptr(cb); // front never moves",
+"    noc_async_write_page(i, dst, addr);",
+"    noc_async_write_barrier();",
+"    // cb_pop_front(cb, 1);   ← MISSING",
+"}"],
+    program:[
+      {line:1,run:()=>cbWait(cb,1)},
+      {line:2,run:()=>null},
+      {line:3,run:k=>{const p=pageAt(cb,cb.rd);dst[k.i]={state:"writing",val:p.tile};return null;}},
+      {line:4,run:()=>{barrierWrites(cb,dst);return null;}},
+      loopIns(6)
+    ]};
+  return {kernels:[base.kernels[0],writer],cb,src:base.src,dst};
+}
+function renderPfHang(sim,prefix,extraMsg){
+  const s=sim.state;
+  $(prefix+"-rp").innerHTML=paneHTML(sim.kernels[0]);
+  $(prefix+"-wp").innerHTML=paneHTML(sim.kernels[1]);
+  drawRing(prefix+"-ring",s.cb);
+  $(prefix+"-tot").innerHTML=totalsHTML(s.cb)+' · <span class="r">pushed ≠ popped</span>';
+  if($(prefix+"-src"))$(prefix+"-src").innerHTML=stripHTML(s.src);
+  if($(prefix+"-dst")){
+    const d=s.dst.map((c,i)=>({...c,wrong:c.state==="written"&&c.val!==i}));
+    $(prefix+"-dst").innerHTML=stripHTML(d);
+  }
+  $(prefix+"-tick").textContent=sim.tick;
+  $(prefix+"-hang").className="hangbar"+(sim.hang?" on":"");
+  if(sim.hang)$(prefix+"-hang").innerHTML=hangHTML(extraMsg);
+  const ok=!sim.running&&!sim.hang;
+  const doneEl=$(prefix+"-done");
+  doneEl.className="donebar"+(ok?" on":"");
+}
+const pfB=new Sim("pfB",buildPfB,s=>renderPfHang(s,"pfB",
+  "The writer finished all 6 iterations (re-reading tile 0 each time) — the reader is stuck at cb_reserve_back with 0 free pages. Symptom row 2: <em>hangs after a few iterations</em>."));
+
+function buildPfC(){
+  const cb=newCB(4);
+  const src=Array.from({length:4},()=>({state:"idle"}));
+  const dst=Array.from({length:4},()=>({state:"empty"}));
+  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",i:0,t:0,pc:0,done:false,blocked:null,
+    lines:[
+"cb_reserve_back(cb, 4);",
+"for (uint32_t t = 0; t < 4; t++) {",
+"    uint32_t addr = get_write_ptr(cb); // same addr!",
+"    noc_async_read_page(t, src, addr);",
+"}",
+"noc_async_read_barrier();",
+"cb_push_back(cb, 4);"],
+    program:[
+      {line:0,run:()=>cbReserve(cb,4)},
+      {line:2,run:()=>null},
+      {line:3,run:k=>{const p=pageAt(cb,cb.wrPush);p.state="filling";p.tile=k.t;src[k.t].state="reading";k.t++;
+        if(k.t<4){k.pc=1;return{jumped:true};}return null;}},
+      {line:5,run:()=>{barrierReads(cb,src);return null;}},
+      {line:6,run:k=>{cbPush(cb,4);k.done=true;return{jumped:true};}}
+    ]};
+  const writer={name:"writer.cpp",proc:"BRISC",color:"amber",i:0,pc:0,done:false,blocked:null,
+    lines:writerLines1(),
+    program:[
+      {line:1,run:()=>cbWait(cb,1)},
+      {line:2,run:()=>null},
+      {line:3,run:k=>{const p=pageAt(cb,cb.rd);p.state="draining";dst[k.i]={state:"writing",val:p.tile};return null;}},
+      {line:4,run:()=>{barrierWrites(cb,dst);return null;}},
+      {line:5,run:()=>cbPop(cb,1)},
+      loopIns(4)
+    ]};
+  return {kernels:[reader,writer],cb,src,dst};
+}
+const pfC=new Sim("pfC",buildPfC,sim=>{
+  renderPfHang(sim,"pfC","");
+  $("pfC-tot").innerHTML=totalsHTML(sim.state.cb);
+  const ok=!sim.running&&!sim.hang;
+  const doneEl=$("pfC-done");
+  doneEl.className="donebar"+(ok?" on":"");
+  if(ok){
+    const s=sim.state,wrong=s.dst.filter((c,i)=>c.val!==i).length;
+    doneEl.innerHTML="<span class='r'>✗ finished cleanly, PCC check fails: "+wrong
+      +" of 4 output tiles wrong — dst[0] holds tile 3 (last overwrite wins), the rest were never written. No hang, no error message.</span>";
+  }
+});
+
+/* ============================== wiring ============================== */
+miniRing("miniring1");miniRing("miniring2");
+$("demopush").onclick=demoPush;$("demopop").onclick=demoPop;renderDemo();
+wireSim(l01,"l01");wireSim(l02,"l02");wireSim(l05,"l05");
+wireSim(pfA,"pfA");wireSim(pfB,"pfB");wireSim(pfC,"pfC");
+document.querySelectorAll('.optgrp button[data-d]').forEach(b=>{
+  b.onclick=()=>{l01depth=+b.dataset.d;
+    document.querySelectorAll('.optgrp button[data-d]').forEach(x=>x.classList.toggle("on",x===b));
+    l01.reset();};
+});
+document.querySelectorAll('.optgrp button[data-b]').forEach(b=>{
+  b.onclick=()=>{l05block=+b.dataset.b;
+    document.querySelectorAll('.optgrp button[data-b]').forEach(x=>x.classList.toggle("on",x===b));
+    l05.reset();};
+});
+document.querySelectorAll('.tabs button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle("on",x===b));
+    ["pfA","pfB","pfC"].forEach((id,i)=>$(id).classList.toggle("on",i===+b.dataset.tab));
+    allSims.forEach(s=>s.stopPlay());
+  };
+});
+/* initial renders for sims that live on non-active slides happen at construction;
+   constructions above ran before slides existed? No — Sim constructors ran after deck build. */
+[l01,l02,l05,pfA,pfB,pfC].forEach(s=>s.render());
+</script>
+</body>
+</html>
