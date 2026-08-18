@@ -52,7 +52,7 @@ a{color:var(--teal)}
 @keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion: reduce){
   .slide.active{animation:none}
-  .pg-filling,.pg-draining,.flight.on,.t-reading,.t-writing{animation:none !important}
+  .pg-filling,.pg-draining,.flight.on,.t-reading,.t-writing,rect.band{animation:none !important}
   .fbar .bar{transition:none !important}
 }
 .wrap{max-width:1280px;margin:0 auto;padding:28px 40px 40px}
@@ -250,6 +250,22 @@ svg.chart{display:block;max-width:100%;height:auto}
 .mq.c{background:var(--violet);border-color:var(--violet)}
 .mblbl{font-family:var(--mono);font-size:10.5px;color:var(--muted);text-align:center}
 .mbarrow{font-family:var(--mono);color:var(--faint);font-size:16px}
+
+/* ---------- slide 7: lesson 08 race ---------- */
+.racegrid{display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:860px;margin:0 auto}
+@media (max-width:900px){.racegrid{grid-template-columns:1fr}}
+.lane{display:flex;flex-direction:column;align-items:center;gap:9px;padding:14px 16px}
+.lanehd{font-family:var(--mono);font-size:12px;color:var(--muted);text-align:center}
+.lanehd b{color:var(--text)}
+.bcnt{font-family:var(--mono);font-size:11px;font-weight:600;fill:var(--text)}
+rect.band{animation:pgpulse 1.15s ease-in-out infinite}
+.tmeter{width:100%;max-width:250px;height:14px;background:var(--panel2);border:1px solid var(--line);border-radius:4px;overflow:hidden;display:flex}
+.tm{height:100%;transition:width .45s ease}
+.tm-a{background:var(--amber)} .tm-b{background:var(--teal)}
+.tm-lbl{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.tm-lbl b{color:var(--text);font-size:13px}
+.lanest{font-family:var(--mono);font-size:11px;color:var(--muted);min-height:30px;text-align:center;max-width:260px}
+.lanest .done{color:var(--green)}
 
 /* ---------- slide 8: fidelity bars ---------- */
 .fbars{display:flex;flex-direction:column;gap:12px;margin-top:16px;max-width:560px}
@@ -545,65 +561,43 @@ matmul_init(cb_a, cb_b);   // NOT binary_op_init_common</pre>
   <p class="src-note">exercises/07_matmul_tuned/README.md — “Reading the benchmark” · solution/compute.cpp — the no-pop window · theory/01 §7: “reducing the math work 4× changes the runtime by 1%”</p>
 </div>`},
 
-{t:"Live · lesson 08 — output blocking", h:`
+{t:"Lesson 08 — one read, Mb outputs", h:`
 <div class="wrap">
-  <p class="eyebrow">07 · live simulation · exercise 08_output_blocking</p>
-  <h2>Hold Mb rows of A: one read of B now feeds Mb outputs</h2>
-  <p class="lede">Lesson 07's reuse was one-dimensional — A's row served Nt columns, but every B
-  column was used once and dropped. Now hold <b>Mb rows of A</b> resident (<code>Mb·Kt</code> tiles)
-  and keep <b>Mb accumulators</b> live in DST, one slot per row: each B column is read once per
-  <em>block</em> and feeds Mb output tiles, so B's traffic divides by Mb. Step a
-  <b>Mt=4, Kt=3, Nt=2</b> problem: run Mb=1 to the end, then Mb=4, and compare the B counters
-  and cycle counts. Mb=1 <em>is</em> lesson 07.</p>
+  <p class="eyebrow">07 · lesson 08 · the mechanism, animated</p>
+  <h2>Hold Mb rows of A — one read of B feeds Mb outputs</h2>
+  <p class="lede">Lesson 07's reuse was one-dimensional: the resident A row served Nt columns, but
+  every B column fed <em>one</em> output tile and was dropped. Output blocking holds <b>Mb rows of
+  A</b> in L1 and keeps <b>Mb accumulators</b> live in DST — each read of B's column lands in Mb
+  outputs at once. Race the two strategies on the same matmul (<b>Mt=4, Kt=3, Nt=2</b>):
+  <b style="color:var(--text)">every step is one trip to DRAM</b>, and the bars keep score.</p>
   <div class="simbar">
     <button class="ctl primary" id="m8-step">⏵ step</button>
     <button class="ctl" id="m8-play">▶ play</button>
     <button class="ctl" id="m8-reset">↺ reset</button>
-    <span class="optgrp">Mb (rows per block)
-      <button data-m8="1" class="on">1</button><button data-m8="2">2</button><button data-m8="4">4</button>
+    <span class="optgrp">right lane Mb
+      <button data-r8="2">2</button><button data-r8="4" class="on">4</button>
     </span>
     <span class="sp"></span>
-    <span class="tickbox" id="m8-res"></span>
-    <span class="tickbox" id="m8-reads"></span>
-    <span class="tickbox">cycle <b id="m8-tick">0</b></span>
+    <span class="tickbox">step <b id="m8-tick">0</b></span>
   </div>
-  <div class="hangbar" id="m8-hang"></div>
   <div class="donebar" id="m8-done"></div>
-  <div class="simgrid">
-    <div class="pane" id="m8-rp"></div>
-    <div class="vizcol">
-      <div style="display:flex;gap:22px;align-items:flex-start;justify-content:center">
-        <div><div class="striplbl">A · Mt×Kt (reads)</div><div class="mmgrid" id="m8-a" style="grid-template-columns:repeat(3,30px)"></div></div>
-        <div><div class="striplbl">B · Kt×Nt (reads)</div><div class="mmgrid" id="m8-b" style="grid-template-columns:repeat(2,30px)"></div></div>
-      </div>
-      <div style="display:flex;gap:14px;align-items:center">
-        <div class="vizcol"><svg class="ring" id="m8-ca" width="96" height="96" viewBox="0 0 96 96"></svg><div class="cbcap" id="m8-calbl">cb_a · Mb·Kt pages</div></div>
-        <div class="vizcol"><svg class="ring" id="m8-cb" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap">cb_b · 2·Kt pages</div></div>
-        <div class="vizcol"><svg class="ring vio" id="m8-cout" width="84" height="84" viewBox="0 0 84 84"></svg><div class="cbcap">cb_out · to writer</div></div>
-      </div>
-      <div><div class="striplbl" id="m8-dstlbl">DST registers — Mb accumulators at once</div><div class="dstslots" id="m8-dst8"></div></div>
-      <div class="accbox" id="m8-acc"></div>
-      <div class="holder" id="m8-holder">DST: free</div>
-      <div><div class="striplbl">C · Mt×Nt output</div><div class="mmgrid" id="m8-c" style="grid-template-columns:repeat(2,30px)"></div></div>
-    </div>
-    <div class="pane violetside" id="m8-cp"></div>
+  <div class="racegrid">
+    <div class="panelbox lane" id="m8-l0"></div>
+    <div class="panelbox lane" id="m8-l1"></div>
   </div>
   <div class="twocol" style="margin-top:20px">
     <div>
-      <p style="color:var(--muted);font-size:13.5px;margin:0">Traffic becomes
-      <code>A: Mt·Kt</code> + <code>B: (Mt/Mb)·Nt·Kt</code> — only B's term divides by Mb. At the
-      real scale (Mt=128, Kt=8, Nt=32) Mb=8 cuts B from <b>32768</b> tile-reads to <b>4096</b>.
-      The DST file caps Mb at 8: one accumulator per slot.</p>
+      <pre class="code" style="border:1px solid var(--line);border-radius:8px"><div class="cl">tile_regs_acquire();          // Mb accumulators: DST[0..Mb)</div><div class="cl">for (uint32_t m = 0; m &lt; Mb; m++)</div><div class="cl">  for (uint32_t kt = 0; kt &lt; Kt; kt++)</div><div class="cl cl-mark">    matmul_tiles(cb_a, cb_b, m*Kt + kt, kt, m);</div><div class="cl cl-mark">    // A: window m·Kt+kt · B: kt — SHARED · DST: slot m</div><div class="cl">tile_regs_commit();  // Mb tiles out; writer scatters them Nt apart</div></pre>
     </div>
     <div>
-      <p style="color:var(--muted);font-size:13.5px;margin:0">The price: Mb trades
-      <b>parallelism for intensity</b> — only Mt/Mb independent row-blocks remain (Mb=8 on Mt=128
-      caps you at 16 cores), and <code>cb_a</code> must hold Mb·Kt tiles of L1. Note the writer
-      (provided) now <em>scatters</em>: a column's Mb tiles land Nt apart in C. The measured sweep
-      is next — and it ends somewhere unexpected.</p>
+      <p style="color:var(--muted);font-size:13.5px;margin:0">The price: Mb trades <b>parallelism
+      for intensity</b>. Row-blocks are the independent work items — the right lane finished in a
+      fraction of the reads but had 1 block where the left had 4. At Mt=128, Mb=8 leaves 16 blocks
+      → a 16-core cap. <code>cb_a</code> must hold Mb·Kt tiles of L1, and the 8 DST slots cap Mb
+      at 8. The measured sweep is next — and it ends somewhere unexpected.</p>
     </div>
   </div>
-  <p class="src-note">exercises/08_output_blocking/solution/{reader,compute}.cpp — trimmed loop bodies · README.md — window index m·Kt+kt, B index kt shared across the m loop</p>
+  <p class="src-note">exercises/08_output_blocking/solution/compute.cpp — the m loop · README.md — traffic: A Mt·Kt + B (Mt/Mb)·Nt·Kt</p>
 </div>`},
 
 {t:"Lesson 08 — the measured sweep", h:`
@@ -1391,148 +1385,125 @@ function renderM7(sim){
 }
 const m7=new Sim("m7",buildM7,renderM7);
 
-/* ============================== slide 7 · lesson 08 stepper ============================== */
-/* output blocking — bigger Mt so Mb has room to work: Mt=4, Kt=3, Nt=2 */
-const M8={Mt:4,Kt:3,Nt:2};let m8mb=1;const m8res={};
-function buildM8(){
-  const {Mt,Kt,Nt}=M8,Mb=m8mb,NB=Mt/Mb;
-  const cba=newCB(Mb*Kt),cbb=newCB(2*Kt),cbout=newCB(Mt*Nt);
-  const aT=Array.from({length:Mt*Kt},()=>({count:0}));
-  const bT=Array.from({length:Kt*Nt},()=>({count:0}));
-  const cT=Array.from({length:Mt*Nt},()=>"empty");
-  const acc={holder:"free",slots:Array.from({length:8},()=>null),m:0,nt:0,blk:0};
-  const st={kernels:null,cba,cbb,cbout,aT,bT,cT,acc,Mb,NB,lastA:-1,lastB:-1};
-  const reader={name:"reader.cpp",proc:"NCRISC",color:"teal",blk:0,nt:0,m:0,kt:0,pc:0,done:false,blocked:null,
-    status:k=>"blk="+k.blk+" nt="+k.nt,
-    lines:[
-"for (uint32_t blk = 0; blk < n_blocks; blk++) { // Mb rows each",
-"  cb_reserve_back(cb_a, Mb*Kt);   // the WHOLE sub-block",
-"  for (uint32_t m = 0; m < Mb; m++)",
-"    for (uint32_t kt = 0; kt < Kt; kt++)",
-"      noc_async_read_page((row0+m)*Kt + kt, a, base_a + (m*Kt+kt)*tb);",
-"  noc_async_read_barrier();       // Mb·Kt reads in flight",
-"  cb_push_back(cb_a, Mb*Kt);",
-"  for (uint32_t nt = 0; nt < Nt; nt++) {",
-"    cb_reserve_back(cb_b, Kt);    // B: once per BLOCK × column",
-"    for (uint32_t kt = 0; kt < Kt; kt++)",
-"      noc_async_read_page(kt*Nt + nt, b, base_b + kt*tb);",
-"    noc_async_read_barrier();",
-"    cb_push_back(cb_b, Kt);",
-"  }",
-"}"],
-    program:[
-      {line:1,run:()=>cbReserve(cba,Mb*Kt)},
-      {line:4,run:k=>{const idx=(k.blk*Mb+k.m)*Kt+k.kt;aT[idx].count++;st.lastA=idx;
-        const p=pageAt(cba,cba.wrPush+k.m*Kt+k.kt);p.state="full";p.tile=idx;
-        k.kt++;if(k.kt>=Kt){k.kt=0;k.m++;}
-        if(k.m<Mb)return{stay:true};k.m=0;return null;}},
-      {line:5,run:()=>{st.lastA=-1;return null;}},
-      {line:6,run:()=>cbPush(cba,Mb*Kt)},
-      {line:8,run:()=>cbReserve(cbb,Kt)},
-      {line:10,run:k=>{const idx=k.kt*Nt+k.nt;bT[idx].count++;st.lastB=idx;
-        const p=pageAt(cbb,cbb.wrPush+k.kt);p.state="full";p.tile=idx;
-        k.kt++;if(k.kt<Kt)return{stay:true};k.kt=0;return null;}},
-      {line:11,run:()=>{st.lastB=-1;return null;}},
-      {line:12,run:()=>cbPush(cbb,Kt)},
-      {line:7,run:k=>{k.nt++;if(k.nt<Nt){k.pc=4;return{jumped:true};}k.nt=0;return null;}},
-      {line:0,run:k=>{k.blk++;if(k.blk<NB){k.pc=0;return{jumped:true};}
-        k.done=true;st.lastA=-1;st.lastB=-1;return{jumped:true};}}
-    ]};
-  const compute={name:"compute.cpp",proc:"TRISC 0·1·2 · FPU",color:"violet",blk:0,nt:0,m:0,kt:0,pc:0,done:false,blocked:null,
-    status:k=>"blk="+k.blk+" nt="+k.nt+" · DST["+k.m+"]",
-    lines:[
-"for (uint32_t blk = 0; blk < n_blocks; blk++) {",
-"  cb_wait_front(cb_a, Mb*Kt);  // Mb rows resident — NO pop",
-"  for (uint32_t nt = 0; nt < Nt; nt++) {",
-"    cb_wait_front(cb_b, Kt);",
-"    tile_regs_acquire();       // Mb accumulators: DST[0..Mb)",
-"    for (uint32_t m = 0; m < Mb; m++)",
-"      for (uint32_t kt = 0; kt < Kt; kt++)",
-"        matmul_tiles(cb_a, cb_b, m*Kt + kt, kt, m); // B idx kt: SHARED",
-"    tile_regs_commit();",
-"    cb_reserve_back(cb_out, Mb);",
-"    tile_regs_wait();",
-"    for (uint32_t m = 0; m < Mb; m++)",
-"      pack_tile(m, cb_out);    // writer scatters: Nt apart in C",
-"    tile_regs_release();",
-"    cb_push_back(cb_out, Mb);",
-"    cb_pop_front(cb_b, Kt);    // B column: used Mb times, dropped",
-"  }",
-"  cb_pop_front(cb_a, Mb*Kt);   // block released only NOW",
-"}"],
-    program:[
-      {line:1,run:()=>cbWait(cba,Mb*Kt)},
-      {line:3,run:()=>cbWait(cbb,Kt)},
-      {line:4,run:k=>{acc.holder="math";acc.nt=k.nt;acc.blk=k.blk;acc.m=0;
-        acc.slots=Array.from({length:8},(x,i)=>i<Mb?{terms:0}:null);
-        k.m=0;k.kt=0;return null;}},
-      {line:7,run:k=>{acc.slots[k.m].terms++;acc.m=k.m;
-        k.kt++;if(k.kt>=Kt){k.kt=0;k.m++;}
-        if(k.m<Mb)return{stay:true};k.m=0;return null;}},
-      {line:8,run:()=>{acc.holder="committed";return null;}},
-      {line:9,run:()=>cbReserve(cbout,Mb)},
-      {line:10,run:()=>{acc.holder="pack";return null;}},
-      {line:12,run:k=>{const p=pageAt(cbout,cbout.wrPush+k.m);p.state="full";p.tile="C";
-        cT[(k.blk*Mb+k.m)*Nt+k.nt]="written";
-        k.m++;if(k.m<Mb)return{stay:true};k.m=0;return null;}},
-      {line:13,run:()=>{acc.holder="free";return null;}},
-      {line:14,run:()=>cbPush(cbout,Mb)},
-      {line:15,run:()=>cbPop(cbb,Kt)},
-      {line:2,run:k=>{k.nt++;if(k.nt<Nt){k.pc=1;return{jumped:true};}k.nt=0;return null;}},
-      {line:17,run:()=>cbPop(cba,Mb*Kt)},
-      {line:0,run:k=>{k.blk++;if(k.blk<NB){k.pc=0;return{jumped:true};}k.done=true;return{jumped:true};}}
-    ]};
-  st.kernels=[reader,compute];
-  return st;
+/* ============================== slide 7 · lesson 08 race ============================== */
+/* Two lanes, same matmul, shared clock. One step = one trip to DRAM:
+   either an A block-load or a B column-read (which lands in Mb outputs). */
+const R8={Mt:4,Kt:3,Nt:2};let r8mb=4;
+function r8Lane(Mb){
+  const {Mt,Kt,Nt}=R8,NB=Mt/Mb,ev=[];
+  for(let blk=0;blk<NB;blk++){
+    ev.push({t:"A",blk});
+    for(let nt=0;nt<Nt;nt++)ev.push({t:"B",blk,nt});
+  }
+  return {Mb,NB,ev,pos:0,cur:null,
+    bCount:Array.from({length:Kt*Nt},()=>0),
+    cDone:Array.from({length:Mt*Nt},()=>false),
+    trafA:0,trafB:0,resident:-1};
 }
-function renderM8(sim){
-  const s=sim.state,{Mt,Kt,Nt}=M8,Mb=s.Mb;
-  $("m8-rp").innerHTML=paneHTML(sim.kernels[0]);
-  $("m8-cp").innerHTML=paneHTML(sim.kernels[1]);
-  drawRing("m8-ca",s.cba,{noCenter:true,noPtr:true});
-  drawRing("m8-cb",s.cbb,{noCenter:true,noPtr:true});
-  drawRing("m8-cout",s.cbout,{noCenter:true,noPtr:true});
-  $("m8-calbl").textContent=s.cba.visible===Mb*Kt
-    ?"cb_a · block "+sim.kernels[1].blk+" resident ("+Mb+"×Kt)"
-    :"cb_a · Mb·Kt = "+(Mb*Kt)+" pages";
-  $("m8-dstlbl").textContent="DST registers — "+Mb+" accumulator"+(Mb>1?"s":"")+" at once (cap 8)";
-  $("m8-a").innerHTML=s.aT.map((t,i)=>
-    '<div class="tile '+(i===s.lastA?"t-reading":t.count?"t-read":"t-empty")+'" title="A tile '+i+", read "+t.count+' times">'+(t.count||"·")+"</div>").join("");
-  $("m8-b").innerHTML=s.bT.map((t,i)=>
-    '<div class="tile '+(i===s.lastB?"t-reading":t.count?"t-read":"t-empty")+'" title="B tile '+i+", read "+t.count+' times">'+(t.count||"·")+"</div>").join("");
-  $("m8-c").innerHTML=s.cT.map(cs=>
-    '<div class="tile vio '+(cs==="written"?"t-written":"t-empty")+'">'+(cs==="written"?"C":"·")+"</div>").join("");
-  const a=s.acc,live=a.holder!=="free";
-  $("m8-dst8").innerHTML=Array.from({length:8},(x,i)=>{
-    const sl=live?a.slots[i]:null;
-    return '<div class="dsts'+(sl?" on":"")+'" title="dst['+i+']">'+(sl?"Σ"+sl.terms:i)+"</div>";}).join("");
-  $("m8-acc").innerHTML=!live?"DST[0.."+Mb+") — released"
-    :"<b>DST[m]</b> = Σ<sub>k</sub> A[blk·Mb+m, k]·B[k,"+a.nt+"] &nbsp;·&nbsp; "
-      +Mb+" row"+(Mb>1?"s":"")+" × ONE B column";
-  const h=$("m8-holder");
-  h.textContent={free:"DST: free",math:"DST: MATH accumulating "+Mb+" slot"+(Mb>1?"s":""),
-    committed:"DST: committed",pack:"DST: PACK holds"}[a.holder];
-  h.className="holder "+(a.holder==="free"?"":a.holder==="math"?"math":a.holder);
-  const ar=s.aT.reduce((x,t)=>x+t.count,0),br=s.bT.reduce((x,t)=>x+t.count,0);
-  $("m8-reads").innerHTML="fetched: A <b>"+ar+"</b>/"+(Mt*Kt)+" · B <b>"+br+"</b>/"+(Kt*Nt)
-    +' <span style="color:var(--faint)">(Mb=1 ends at B='+(Mt*Nt*Kt)+")</span>";
-  $("m8-tick").textContent=sim.tick;
-  $("m8-hang").className="hangbar"+(sim.hang?" on":"");
-  if(sim.hang)$("m8-hang").innerHTML=hangHTML();
-  const ok=!sim.running&&!sim.hang;
-  $("m8-done").className="donebar"+(ok?" on":"");
-  if(ok)$("m8-done").innerHTML="✓ same C from <b>"+(ar+br)+"</b> reads at Mb="+Mb
-    +": A counters all 1, every B tile read <b>"+(br/(Kt*Nt))+"×</b> — exactly Mt/Mb. "
-    +(Mb===M8.Mt?"B's redundancy is gone: 2-D reuse is complete for this problem size. "
-      :"Raise Mb and B's counters keep falling. ")
-    +"On silicon (Mt=128, Kt=8, Nt=32, 16 cores) the sweep Mb 1 → 8 measures 394 → 160 µs. "
-    +"The next slide reads that benchmark — including the part where the win stops paying.";
-  const parts=[];
-  for(const b of [1,2,4])if(m8res[b])parts.push("Mb "+b+" → <b>"+m8res[b].tick+"</b> cyc · B×"+m8res[b].br);
-  $("m8-res").innerHTML=parts.join(" · ");
+function r8Step(ln){
+  if(ln.pos>=ln.ev.length){ln.cur=null;return;}
+  const e=ln.ev[ln.pos++];ln.cur=e;
+  if(e.t==="A"){ln.resident=e.blk;ln.trafA+=ln.Mb*R8.Kt;}
+  else{
+    ln.trafB+=R8.Kt;
+    for(let k=0;k<R8.Kt;k++)ln.bCount[k*R8.Nt+e.nt]++;
+    for(let m=0;m<ln.Mb;m++)ln.cDone[(e.blk*ln.Mb+m)*R8.Nt+e.nt]=true;
+  }
 }
-const m8=new Sim("m8",buildM8,renderM8);
-m8.onDone=s=>{m8res[m8mb]={tick:s.tick,br:s.state.bT.reduce((x,t)=>x+t.count,0)};};
+function r8SVG(ln){
+  const {Mt,Kt,Nt}=R8,T=24,P=28;
+  const ax=10,by=16,bx=ax+Kt*P+18,ay=by+Kt*P+22,cx=bx,cy=ay;
+  let s='<text x="'+(ax+(Kt*P-4)/2)+'" y="'+(ay+Mt*P+8)+'" class="axt" text-anchor="middle">A · Mt×Kt</text>'
+       +'<text x="'+(bx+(Nt*P-4)/2)+'" y="'+(by-6)+'" class="axt" text-anchor="middle">B · Kt×Nt (reads)</text>'
+       +'<text x="'+(cx+(Nt*P-4)/2)+'" y="'+(cy+Mt*P+8)+'" class="axt" text-anchor="middle">C</text>'
+       +'<text x="'+(ax+Kt*P+3)+'" y="'+(ay+Mt*P/2)+'" class="axt" text-anchor="middle">×</text>';
+  const blk=ln.resident;
+  for(let r=0;r<Mt;r++)for(let c=0;c<Kt;c++){
+    const x=ax+c*P,y=ay+r*P;
+    const inRes=blk>=0&&r>=blk*ln.Mb&&r<(blk+1)*ln.Mb;
+    const past=blk>=0&&r<blk*ln.Mb;
+    const f=inRes?"color-mix(in srgb,var(--amber) 38%,var(--panel2))":"var(--panel2)";
+    const str=inRes?"var(--amber)":past?"color-mix(in srgb,var(--amber) 45%,var(--line))":"var(--line)";
+    s+='<rect x="'+x+'" y="'+y+'" width="'+T+'" height="'+T+'" rx="5" fill="'+f+'" stroke="'+str+'"/>';
+  }
+  if(blk>=0){
+    const fy=ay+blk*ln.Mb*P-4;
+    s+='<rect x="'+(ax-5)+'" y="'+fy+'" width="'+(Kt*P-4+10)+'" height="'+(ln.Mb*P-4+8)+'" rx="7" fill="none" stroke="var(--amber)" stroke-dasharray="5 4" stroke-width="1.5"/>'
+      +'<text x="'+(ax-5)+'" y="'+(fy-4)+'" class="axt" style="fill:var(--amber)">cb_a · L1</text>';
+  }
+  for(let r=0;r<Kt;r++)for(let c=0;c<Nt;c++){
+    const x=bx+c*P,y=by+r*P,n=ln.bCount[r*Nt+c];
+    const f=n?"color-mix(in srgb,var(--teal) "+Math.min(15+n*15,60)+"%,var(--panel2))":"var(--panel2)";
+    s+='<rect x="'+x+'" y="'+y+'" width="'+T+'" height="'+T+'" rx="5" fill="'+f+'" stroke="'+(n?"var(--teal)":"var(--line)")+'"/>'
+      +'<text x="'+(x+T/2)+'" y="'+(y+T/2+1)+'" class="bcnt" text-anchor="middle" dominant-baseline="central">'+(n||"·")+"</text>";
+  }
+  for(let r=0;r<Mt;r++)for(let c=0;c<Nt;c++){
+    const x=cx+c*P,y=cy+r*P;
+    s+=ln.cDone[r*Nt+c]
+      ?'<rect x="'+x+'" y="'+y+'" width="'+T+'" height="'+T+'" rx="5" fill="var(--violet)" stroke="var(--violet)"/>'
+      :'<rect x="'+x+'" y="'+y+'" width="'+T+'" height="'+T+'" rx="5" fill="none" stroke="var(--line)" stroke-dasharray="3 3"/>';
+  }
+  if(ln.cur&&ln.cur.t==="A"){
+    s+='<rect class="band" x="'+(ax-3)+'" y="'+(ay+ln.cur.blk*ln.Mb*P-3)+'" width="'+(Kt*P-4+6)+'" height="'+(ln.Mb*P-4+6)+'" rx="6" fill="color-mix(in srgb,var(--amber) 22%,transparent)" stroke="var(--amber)"/>';
+  }
+  if(ln.cur&&ln.cur.t==="B"){
+    const nt=ln.cur.nt,b2=ln.cur.blk;
+    s+='<rect class="band" x="'+(bx+nt*P-3)+'" y="'+(by-3)+'" width="'+(T+6)+'" height="'+((cy+Mt*P-4+3)-(by-3))+'" rx="6" fill="color-mix(in srgb,var(--teal) 20%,transparent)" stroke="var(--teal)"/>';
+    for(let m=0;m<ln.Mb;m++){
+      const row=b2*ln.Mb+m;
+      s+='<rect class="band" x="'+(ax-3)+'" y="'+(ay+row*P-3)+'" width="'+((cx+Nt*P-4+3)-(ax-3))+'" height="'+(T+6)+'" rx="6" fill="color-mix(in srgb,var(--amber) 16%,transparent)" stroke="var(--amber)"/>'
+        +'<rect x="'+(cx+nt*P-2)+'" y="'+(cy+row*P-2)+'" width="'+(T+4)+'" height="'+(T+4)+'" rx="6" fill="none" stroke="var(--violet)" stroke-width="2"/>';
+    }
+  }
+  return s;
+}
+function r8LaneHTML(ln,head,MAX){
+  const tot=ln.trafA+ln.trafB;
+  const dst=Array.from({length:8},(x,i)=>{
+    const on=ln.cur&&ln.cur.t==="B"&&i<ln.Mb;
+    return '<div class="dsts'+(on?" on":"")+'" title="dst['+i+']">'+(on?"m"+i:i)+"</div>";}).join("");
+  let st;
+  if(ln.cur)st=ln.cur.t==="A"
+    ?"load A block "+(ln.cur.blk+1)+"/"+ln.NB+" → cb_a ("+(ln.Mb*R8.Kt)+" tiles)"
+    :"read B col "+ln.cur.nt+" ONCE → <b>"+ln.Mb+"</b> output tile"+(ln.Mb>1?"s":"");
+  else if(ln.pos>=ln.ev.length&&ln.pos>0)st='<span class="done">✓ C complete · '+tot+" DRAM reads</span>";
+  else st="ready";
+  return '<div class="lanehd">'+head+'</div>'
+    +'<svg width="190" viewBox="0 0 174 250" class="chart" role="img" aria-label="blocked matmul dataflow">'+r8SVG(ln)+"</svg>"
+    +'<div class="striplbl">DST · '+ln.Mb+" accumulator"+(ln.Mb>1?"s":"")+" of 8</div>"
+    +'<div class="dstslots">'+dst+"</div>"
+    +'<div class="tmeter"><span class="tm tm-a" style="width:'+(ln.trafA/MAX*100).toFixed(1)+'%"></span><span class="tm tm-b" style="width:'+(ln.trafB/MAX*100).toFixed(1)+'%"></span></div>'
+    +'<div class="tm-lbl">DRAM reads <b>'+tot+'</b> · <span class="a">A '+ln.trafA+'</span> · <span class="t">B '+ln.trafB+"</span></div>"
+    +'<div class="lanest">'+st+"</div>";
+}
+function renderR8(r){
+  const MAX=R8.Mt*R8.Kt+R8.Mt*R8.Nt*R8.Kt;
+  const l1=r.lanes[1];
+  const heads=["<b>Mb = 1</b> · lesson 07 · "+R8.Mt+" row-blocks",
+    "<b>Mb = "+l1.Mb+"</b> · output blocking · "+l1.NB+" row-block"+(l1.NB>1?"s":"")];
+  r.lanes.forEach((ln,i)=>{$("m8-l"+i).innerHTML=r8LaneHTML(ln,heads[i],MAX);});
+  $("m8-tick").textContent=r.tick;
+  const done=!r.running&&r.tick>0;
+  $("m8-done").className="donebar"+(done?" on":"");
+  if(done)$("m8-done").innerHTML="✓ identical C, identical A traffic ("+r.lanes[0].trafA
+    +" tiles) — but B: <b>"+r.lanes[0].trafB+"</b> vs <b>"+l1.trafB+"</b> tile-reads, ÷Mb exactly. "
+    +"On silicon (Mt=128, Kt=8, Nt=32) Mb 1 → 8 cuts measured traffic 74 → 18 MiB… yet time only "
+    +"falls 394 → 160 µs — traffic ÷4.1, time ÷2.5. <b>Traffic is not time</b> — the sweep on the "
+    +"next slide shows the bottleneck moving.";
+}
+const r8={lanes:[r8Lane(1),r8Lane(r8mb)],tick:0,timer:null,playBtn:null,
+  get running(){return this.lanes.some(l=>l.pos<l.ev.length);},
+  reset(){this.stopPlay();this.lanes=[r8Lane(1),r8Lane(r8mb)];this.tick=0;this.render();},
+  step(){if(!this.running)return;this.lanes.forEach(l=>r8Step(l));this.tick++;
+    if(!this.running)this.stopPlay();this.render();},
+  playToggle(){if(this.timer)this.stopPlay();
+    else{if(!this.running)this.reset();
+      this.timer=setInterval(()=>{this.step();if(!this.running)this.stopPlay();},800);
+      if(this.playBtn)this.playBtn.textContent="⏸ pause";}},
+  stopPlay(){if(this.timer){clearInterval(this.timer);this.timer=null;}
+    if(this.playBtn)this.playBtn.textContent="▶ play";},
+  render(){renderR8(this);}};
+allSims.push(r8);
 
 /* ============================== slide 8 · lesson 08 sweep ============================== */
 const T8={cur:1,order:[1,2,4,8],
@@ -1590,10 +1561,10 @@ function fxRender(){
 }
 
 /* ============================== wiring ============================== */
-wireSim(l05,"l05");wireSim(mm,"mm");wireSim(m7,"m7");wireSim(m8,"m8");
-document.querySelectorAll("button[data-m8]").forEach(b=>{
-  b.onclick=()=>{m8mb=+b.dataset.m8;
-    document.querySelectorAll("button[data-m8]").forEach(x=>x.classList.toggle("on",x===b));m8.reset();};
+wireSim(l05,"l05");wireSim(mm,"mm");wireSim(m7,"m7");wireSim(r8,"m8");
+document.querySelectorAll("button[data-r8]").forEach(b=>{
+  b.onclick=()=>{r8mb=+b.dataset.r8;
+    document.querySelectorAll("button[data-r8]").forEach(x=>x.classList.toggle("on",x===b));r8.reset();};
 });
 document.querySelectorAll("button[data-m]").forEach(b=>{
   b.onclick=()=>{LAT.mode=b.dataset.m==="serial"?"serial":"over";
@@ -1623,7 +1594,7 @@ latDraw();mcRender();t8Render();fxRender();
 lineChart($("l05-chart"),["block 1","2","4","8"],[74,115,166,195],
   {ceiling:195,ceilLabel:"~195 GB/s ceiling",ymax:232,color:"var(--teal)",w:400,h:180,
    labels:["170 µs","109","75.8","64.6"]});
-[l05,mm,m7,m8].forEach(s=>s.render());
+[l05,mm,m7,r8].forEach(s=>s.render());
 </script>
 </body>
 </html>
