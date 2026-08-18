@@ -160,6 +160,7 @@ SLIDES.push({t:"Tensor Parallel Dojo",h:`
     <code class="c-t">column-parallel</code><code class="c-t">row-parallel</code>
     <code class="c-a">ttnn.all_reduce</code><code class="c-a">reduce-scatter + all-gather</code>
     <code class="c-v">GQA 32Q : 16KV</code><code class="c-v">per-head QK-norm</code>
+    <code class="c-t">ring SDPA</code><code class="c-a">all_gather_matmul_async</code>
   </div>
   <p class="hint">navigate with <kbd>←</kbd> <kbd>→</kbd> · every animation has a play button</p>
 </div>`});
@@ -324,10 +325,38 @@ SLIDES.push({t:"The zero-communication corridor",h:`
   <div class="stepcap" id="co-cap"><b>Press play</b> — the caption follows each op with its per-device shape.</div>
   <p class="src-note">op sequence: models/demos/gemma4/tt/attention/decode.py:96-343</p>
 </div>`});
-/* ============================== slide 8 · the one CCL ============================== */
+
+/* ============================== slide 8 · zoom: full vs shard ============================== */
+SLIDES.push({t:"Zoom — full tensor or shard, op by op",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>07</b> · zoom — full tensor or shard?</p>
+  <h2>Op by op: where a shard suffices, where the full tensor is law</h2>
+  <p class="lede">Same corridor, magnified — everything is <b>device 0's view</b> of a sliding layer
+  (4 Q + 2 KV heads). For every op ask one question: <b>which axis does it reduce over?</b>
+  If that axis is not the one we sharded, the shard is enough. The moment they coincide,
+  someone must pay — replicate, gather, or all-reduce.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="zo-play">▶ play</button>
+    <button class="ctl" id="zo-step">step</button>
+    <button class="ctl" id="zo-reset">reset</button>
+    <span class="sp"></span>
+    <span class="mono" id="zo-verdict" style="font-size:12.5px;border:1px solid var(--line);border-radius:6px;padding:6px 12px;background:var(--panel)"></span>
+  </div>
+  <figure class="viz">
+    <svg id="zo-svg" role="img" aria-label="Per-op magnified view of the attention pipeline showing, for each op, whether device 0 needs the full tensor or only its shard, based on which axis the op reduces over"></svg>
+    <figcaption id="zo-fig"></figcaption>
+  </figure>
+  <div class="stepcap" id="zo-cap"></div>
+  <blockquote class="rule" style="margin-top:16px">An op runs shard-local <b>iff its reduction axis ≠ the
+  sharding axis</b>. Norms reduce over hidden (x is replicated ✓), SDPA reduces over sequence (we sharded
+  heads ✓), matmuls reduce over their inner dim — which is exactly why the two projections pin where the
+  block's communication lives.</blockquote>
+</div>`});
+
+/* ============================== slide 9 · the one CCL ============================== */
 SLIDES.push({t:"The one CCL — all-reduce after o_proj",h:`
 <div class="wrap">
-  <p class="eyebrow"><b>07</b> · the toll booth</p>
+  <p class="eyebrow"><b>08</b> · the toll booth</p>
   <h2>The one CCL: all-reduce after <code style="font-size:.85em">o_proj</code></h2>
   <p class="lede">Row-parallel <code>o_proj</code> left every device holding a full-shaped
   <b class="r">partial sum</b> of the block's output [1×5376 per user]. One
@@ -354,15 +383,18 @@ SLIDES.push({t:"The one CCL — all-reduce after o_proj",h:`
 /* ============================== slide 9 · sequence parallelism ============================== */
 SLIDES.push({t:"Sequence parallelism — same bytes, sharded residual",h:`
 <div class="wrap">
-  <p class="eyebrow"><b>08</b> · beyond TP</p>
+  <p class="eyebrow"><b>09</b> · beyond TP</p>
   <h2>SP: split the all-reduce, shard the boring parts by sequence</h2>
   <p class="lede">Between blocks, plain TP keeps the residual stream <b>replicated</b> — 8 identical
   copies of [S×5376], and the RMSNorms redundantly computed 8×. Sequence parallelism notices the
   all-reduce is already RS + AG, and <b>pulls the two halves apart</b>: reduce-scatter at the block's
   exit (sharding the stream <i>by sequence</i>), norms on 1/8th of the tokens each,
   all-gather at the next block's entry. <b class="t">Same wire bytes. 8× less activation memory,
-  8× less norm work.</b> Prefill of a 128k context is where this pays.</p>
+  8× less norm work.</b> Press play in each mode and watch where the stream lives.</p>
   <div class="simbar">
+    <button class="ctl primary" id="sp-play">▶ play</button>
+    <button class="ctl" id="sp-step">step</button>
+    <button class="ctl" id="sp-reset">reset</button>
     <span class="optgrp">mode:
       <button data-sp="tp" class="on">plain TP</button>
       <button data-sp="sp">TP + SP</button></span>
@@ -375,10 +407,62 @@ SLIDES.push({t:"Sequence parallelism — same bytes, sharded residual",h:`
   <div class="stepcap" id="sp-note"></div>
 </div>`});
 
-/* ============================== slide 10 · the full graph ============================== */
+/* ============================== slide 11 · ring SDPA ============================== */
+SLIDES.push({t:"Ring SDPA — when the sequence itself must shard",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>10</b> · the sequence strikes back</p>
+  <h2>Ring SDPA: rotate the KV past every Q shard</h2>
+  <p class="lede">The zoom slide flagged it: SDPA is the one op that needs the <b>full sequence</b> —
+  fine while we shard heads. But push SP inside attention (or grow the context past what one chip's
+  KV can hold) and the sequence axis itself gets cut: device i holds Q<sub>i</sub> and KV<sub>i</sub>,
+  each 1/8th of the tokens. Softmax still spans ALL tokens. The fix is the same ring from the
+  all-reduce slide, aimed at attention: <b class="t">keep Q pinned, rotate the KV shards ring-wise</b>,
+  and fold each visiting block into a running <b class="v">online softmax</b> — the flash-attention
+  trick, so no full score row ever materializes.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="rs-play">▶ play</button>
+    <button class="ctl" id="rs-step">step</button>
+    <button class="ctl" id="rs-reset">reset</button>
+    <span class="sp"></span>
+    <span class="optgrp" style="color:var(--muted)">KV hops: <b class="mono" id="rs-hops" style="color:var(--text)">0</b>&nbsp;· blocks done: <b class="mono" id="rs-done" style="color:var(--text)">0/64</b></span>
+  </div>
+  <figure class="viz">
+    <svg id="rs-svg" role="img" aria-label="Ring attention over 8 devices: each device keeps its query shard while key-value shards rotate around the ring; a coverage matrix fills one diagonal per step until every query shard has seen every key-value shard"></svg>
+    <figcaption id="rs-cap">left: the ring — Q pinned, KV visiting · right: which (Q shard × KV shard) blocks are done</figcaption>
+  </figure>
+  <div class="stepcap" id="rs-note"><b>Press play.</b> Each step: compute SDPA(Qᵢ, visiting KV block), fold into the accumulator, pass the KV block to the next device — the hop rides the wire <i>while</i> the next block computes.</div>
+  <p class="src-note">not what gemma4 ships today (heads-sharded SDPA needs no ring) — but it is the shape of tt-metal's ring-fused work, e.g. the ring-fused indexer_score op that overlaps an SP all-gather with scoring (#49899)</p>
+</div>`});
+
+/* ============================== slide 12 · overlap CCL with compute ============================== */
+SLIDES.push({t:"Hiding the CCL — all-gather fused into the matmul",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>11</b> · hiding the wire</p>
+  <h2>The best CCL is one you never wait for</h2>
+  <p class="lede">Under SP the block entry needs an all-gather before the QKV matmul — a CCL squarely
+  on the critical path. But a matmul doesn't need its whole input to <i>start</i>: it eats K-dim
+  chunks. <code>ttnn.all_gather_matmul_async</code> exploits that: <b class="t">compute the chunk
+  that already arrived while the ring delivers the next one</b>. Same bytes, same math —
+  the wire time just disappears under the FPU time. Race them:</p>
+  <div class="simbar">
+    <button class="ctl primary" id="ov-play">▶ race</button>
+    <button class="ctl" id="ov-step">step</button>
+    <button class="ctl" id="ov-reset">reset</button>
+    <span class="sp"></span>
+    <span class="optgrp" style="color:var(--muted)">clock: <b class="mono" id="ov-clk" style="color:var(--text)">0</b></span>
+  </div>
+  <figure class="viz">
+    <svg id="ov-svg" role="img" aria-label="Race between a serial all-gather followed by a matmul, and a fused version where each matmul chunk starts as soon as its shard arrives, finishing far earlier because communication hides under compute"></svg>
+    <figcaption>one device's view · <span class="a">amber = shard in flight on the ring</span> · <span class="t">teal = FPU computing</span></figcaption>
+  </figure>
+  <div class="stepcap" id="ov-cap"><b>Press race.</b> Top lane pair waits for the full gather; bottom pair starts on shard 0 immediately.</div>
+  <p class="src-note">real op: ttnn.experimental.all_gather_matmul_async — gemma-3's attention uses it before wo when a ring topology is available (use_fused_all_gather_matmul, tt_transformers/tt/attention.py:755)</p>
+</div>`});
+
+/* ============================== slide 13 · the full graph ============================== */
 SLIDES.push({t:"The full graph — where CCLs live",h:`
 <div class="wrap">
-  <p class="eyebrow"><b>09</b> · the map</p>
+  <p class="eyebrow"><b>12</b> · the map</p>
   <h2>The whole block as a graph</h2>
   <p class="lede">Every edge labelled with how its tensor lives on the mesh. CCLs glow amber —
   they are the <i>only</i> places bytes cross chips. Toggle SP to watch the one all-reduce split
@@ -701,22 +785,22 @@ const CO_OPS=[
   {n:"AR",cap:"<b class='a'>ttnn.all_reduce</b> — the single CCL. 8 partials become the true output, replicated for the residual add. decode.py:341 — the only line in this block where bytes cross chips."}
 ];
 function coRender(step){
-  const x0=110,sw=92,gap=14,laneH=36,y0=46;
+  const x0=110,sw=104,gap=14,laneH=46,y0=50;
   let o=DEFS;
   for(let d=0;d<8;d++){
     const y=y0+d*laneH;
-    o+='<rect x="14" y="'+(y+4)+'" width="10" height="18" rx="2" fill="'+DEV[d]+'"/>';
-    o+=lbl(30,y+18,"dev "+d,"svsm");
+    o+='<rect x="14" y="'+(y+7)+'" width="10" height="22" rx="2" fill="'+DEV[d]+'"/>';
+    o+=lbl(30,y+22,"dev "+d,"svsm");
   }
   for(let s=0;s<CO_OPS.length;s++){
     const x=x0+s*(sw+gap),curr=s===step,done=s<step;
-    o+='<text x="'+(x+sw/2-(s===9?6:0))+'" y="'+(y0-14)+'" text-anchor="middle" class="'+(curr?"axt2":"axt")+'">'+CO_OPS[s].n+"</text>";
+    o+='<text x="'+(x+sw/2-(s===9?6:0))+'" y="'+(y0-16)+'" text-anchor="middle" class="'+(curr?"axt2":"axt")+'" font-size="13.5">'+CO_OPS[s].n+"</text>";
     if(s===9){ /* all-reduce: one capsule spanning all lanes */
       const y=y0,h=8*laneH-10;
       o+='<rect x="'+x+'" y="'+y+'" width="'+(sw-18)+'" height="'+h+'" rx="10" fill="'+(step>=9?"color-mix(in srgb,var(--amber) 26%,var(--panel2))":"var(--panel2)")+'" stroke="var(--amber)" stroke-width="'+(curr?2.4:1.2)+'"'+(step<9?' stroke-dasharray="4 4"':"")+'/>';
       if(step>=9){ /* crossing traffic inside the capsule */
         for(let d=0;d<7;d++){
-          const ya=y0+d*laneH+13,yb=y0+(d+1)*laneH+13;
+          const ya=y0+d*laneH+17,yb=y0+(d+1)*laneH+17;
           o+='<line x1="'+(x+16)+'" y1="'+ya+'" x2="'+(x+sw-34)+'" y2="'+yb+'" stroke="var(--amber)" stroke-width="1.5" marker-end="url(#arh)"/>'
             +'<line x1="'+(x+sw-34)+'" y1="'+ya+'" x2="'+(x+16)+'" y2="'+yb+'" stroke="var(--amber)" stroke-width="1.5" opacity=".55" marker-end="url(#arh)"/>';
         }
@@ -727,16 +811,173 @@ function coRender(step){
     for(let d=0;d<8;d++){
       const y=y0+d*laneH;
       const base=s===0?NEUT:(s===8?tint("var(--red)",done||curr?34:14):tint(DEV[d],done||curr?(curr?85:60):16));
-      o+='<rect x="'+x+'" y="'+y+'" width="'+(sw-18)+'" height="26" rx="6" fill="'+base+'"'+(curr?' stroke="var(--text)" stroke-width="1.4"':"")+'/>';
-      if(s<9)o+=arrow(x+sw-16,y+13,x+sw+gap-4,y+13,done?"var(--teal)":"var(--line)");
+      o+='<rect x="'+x+'" y="'+y+'" width="'+(sw-18)+'" height="34" rx="7" fill="'+base+'"'+(curr?' stroke="var(--text)" stroke-width="1.4"':"")+'/>';
+      if(s<9)o+=arrow(x+sw-16,y+17,x+sw+gap-4,y+17,done?"var(--teal)":"var(--line)");
     }
   }
   /* "no crossing" guard rails between lanes up to o_proj */
   o+='<text x="'+(x0+4*(sw+gap))+'" y="'+(y0+8*laneH+16)+'" text-anchor="middle" class="svsm" fill="var(--green)">'+(step<9?"◦ no edge has crossed a lane yet":"◦ lanes stayed sealed until here —")+"</text>";
-  const svg=$("co-svg");svg.setAttribute("viewBox","0 0 1180 "+(y0+8*laneH+30));svg.innerHTML=o;
+  const svg=$("co-svg");svg.setAttribute("viewBox","0 0 1300 "+(y0+8*laneH+30));svg.innerHTML=o;
   $("co-cap").innerHTML="<b>"+(step+1)+"/10 · "+CO_OPS[step].n+"</b> — "+CO_OPS[step].cap;
 }
 stepper("co",9,coRender,1500);
+
+/* ============================== slide 8 · zoom: full vs shard ============================== */
+const ZO_NAMES=["pre-norm","wqkv","heads+norms","RoPE","KV cache","SDPA","concat","o_proj","+residual"];
+function zbar(x,y,w,h,on,col,label,sub){
+  let s="";const swd=w/8;
+  for(let k=0;k<8;k++)s+='<rect x="'+(x+k*swd).toFixed(1)+'" y="'+y+'" width="'+(swd-2.5).toFixed(1)+'" height="'+h+'" rx="3" fill="'+(on(k)?tint(col,72):tint("var(--faint)",14))+'"/>';
+  if(label)s+='<text x="'+(x+w/2)+'" y="'+(y-10)+'" text-anchor="middle" class="svlbl" font-size="12.5">'+label+"</text>";
+  if(sub)s+='<text x="'+(x+w/2)+'" y="'+(y+h+18)+'" text-anchor="middle" class="svsm">'+sub+"</text>";
+  return s;
+}
+function zbrace(x1,x2,y,txt){
+  return '<path d="M '+x1+' '+y+' v 9 H '+x2+' v -9" fill="none" stroke="var(--amber)" stroke-width="1.6"/>'
+    +'<text x="'+((x1+x2)/2)+'" y="'+(y+26)+'" text-anchor="middle" class="svsm" fill="var(--amber)" font-size="11.5">'+txt+"</text>";
+}
+function zoRender(step){
+  let o=DEFS;
+  const mw=118;
+  ZO_NAMES.forEach((n,i)=>{
+    const x=20+i*(mw+9),on=i===step;
+    o+='<rect x="'+x+'" y="12" width="'+mw+'" height="26" rx="13" fill="'+(on?"color-mix(in srgb,var(--teal) 20%,var(--panel2))":"var(--panel2)")+'" stroke="'+(on?"var(--teal)":"var(--line)")+'"/>'
+      +'<text x="'+(x+mw/2)+'" y="29" text-anchor="middle" class="'+(on?"axt2":"axt")+'">'+n+"</text>";
+  });
+  let verdict="",fig="",cap="";
+  if(step===0){
+    o+=zbar(90,120,640,46,()=>true,"var(--teal)","x — the full hidden vector [1×5376]","device 0 holds every element — because the stream is replicated");
+    o+=zbrace(90,730,176,"RMS statistic = mean over ALL 5376 elements — reduction axis: HIDDEN");
+    o+=arrow(760,143,830,143,"currentColor");
+    o+=zbar(850,120,250,46,()=>true,"var(--faint)","x̂ — normalized","same shape · still replicated");
+    verdict="IN: FULL (replicated ✓) · W: γ 5376, replicated · OUT: full, replicated";
+    fig="RMSNorm reduces over hidden — it must see the whole vector.";
+    cap="<b>pre-norm.</b> The statistic touches all 5376 elements. If x were hidden-sharded this op would need a CCL of its own — plain TP dodges that by keeping x replicated (paying memory); SP instead hands it a sequence-shard, which is also fine: different tokens are independent here.";
+  }else if(step===1){
+    o+=zbar(50,130,440,44,()=>true,"var(--teal)","x [1×5376] — ALL of it",null);
+    o+=zbrace(50,490,182,"matmul reduces over hidden → every input element is needed");
+    o+=opTxt(525,158,"×");
+    for(let k=0;k<8;k++)o+='<rect x="'+(555+k*28)+'" y="80" width="25" height="140" rx="3" fill="'+(k===0?tint(DEV[0],70):tint("var(--faint)",14))+'"/>';
+    o+='<text x="667" y="66" text-anchor="middle" class="svlbl" font-size="12.5">wqkv 5376×16384</text>';
+    o+='<text x="667" y="242" text-anchor="middle" class="svsm">device 0 stores strip 0 only — 2048 of 16384 columns</text>';
+    o+=opTxt(815,158,"=");
+    o+=zbar(850,130,250,44,k=>k===0,DEV[0],"y₀ [1×2048]","4 Q + 2 K + 2 V head bundles");
+    verdict="IN: FULL — free, it's replicated · W: ⅛ · OUT: shard";
+    fig="The projection needs full x but only its own weight strip.";
+    cap="<b>wqkv.</b> Column-parallel: the inner (reduced) dim is hidden, so the input must be complete — and it is, for free, because the block entered replicated. Under SP this is exactly the spot where the all-gather must have fired already. The output is born sharded and stays that way.";
+  }else if(step===2){
+    const qs=62;
+    for(let k=0;k<4;k++){
+      o+='<rect x="'+(80+k*(qs+14))+'" y="95" width="'+qs+'" height="'+qs+'" rx="8" fill="'+tint("var(--teal)",65)+'"/>'
+        +'<text x="'+(80+k*(qs+14)+qs/2)+'" y="'+(95+qs/2+4)+'" text-anchor="middle" class="svlbl">q'+k+"</text>";
+    }
+    for(let k=0;k<2;k++){
+      o+='<rect x="'+(420+k*(qs+14))+'" y="95" width="'+qs+'" height="'+qs+'" rx="8" fill="'+tint("var(--amber)",55)+'"/>'
+        +'<text x="'+(420+k*(qs+14)+qs/2)+'" y="'+(95+qs/2+4)+'" text-anchor="middle" class="svlbl">k'+k+"</text>";
+      o+='<rect x="'+(600+k*(qs+14))+'" y="95" width="'+qs+'" height="'+qs+'" rx="8" fill="'+tint("var(--violet)",55)+'"/>'
+        +'<text x="'+(600+k*(qs+14)+qs/2)+'" y="'+(95+qs/2+4)+'" text-anchor="middle" class="svlbl">v'+k+"</text>";
+    }
+    o+=zbrace(80,142,168,"Σ over d_h=256 — INSIDE one head");
+    o+='<text x="800" y="130" class="svsm">q,k: learned γ (256 wide, replicated)</text>'
+      +'<text x="800" y="150" class="svsm">v: RMSNorm with NO weight — Gemma-4 quirk</text>';
+    for(let k=0;k<28;k++)o+='<rect x="'+(80+k*24)+'" y="215" width="20" height="20" rx="3" fill="'+tint("var(--faint)",12)+'"/>';
+    o+='<text x="80" y="262" class="svsm">the other 28 Q heads — on devices 1–7, never touched here</text>';
+    verdict="IN: shard · W: γ tiny + replicated · OUT: shard";
+    fig="Per-head norms never look outside a head.";
+    cap="<b>per-head RMSNorm.</b> The reduction is over head_dim, entirely inside a head we own. This is why Gemma-4's QK-norm costs TP nothing — the norm weights are 256 floats, replicated everywhere (weights.py:118-181).";
+  }else if(step===3){
+    o+='<rect x="120" y="80" width="210" height="180" rx="12" fill="var(--panel2)" stroke="var(--teal)" stroke-width="1.5"/>'
+      +'<text x="225" y="68" text-anchor="middle" class="svlbl" font-size="12.5">one head — 256 elements, as 128 pairs</text>';
+    for(let p=0;p<4;p++){
+      const py=105+p*38;
+      o+='<circle cx="170" cy="'+py+'" r="9" fill="'+tint("var(--teal)",70)+'"/><circle cx="210" cy="'+py+'" r="9" fill="'+tint("var(--teal)",40)+'"/>'
+        +'<path d="M 232 '+(py+6)+' a 12 12 0 1 1 0 -12" fill="none" stroke="var(--amber)" stroke-width="1.6" marker-end="url(#arh)"/>'
+        +'<text x="262" y="'+(py+4)+'" class="svsm">rotate by θ·pos</text>';
+    }
+    o+='<text x="400" y="120" class="svsm" font-size="12">• mixes only (x₂ᵢ, x₂ᵢ₊₁) — element pairs, NO reduction at all</text>'
+      +'<text x="400" y="148" class="svsm" font-size="12">• the position index is a scalar every device already knows</text>'
+      +'<text x="400" y="176" class="svsm" font-size="12">• global layers: θ=1e6, only the first ¼ of each head rotates (partial_rotary_factor 0.25)</text>'
+      +'<text x="400" y="204" class="svsm" font-size="12">• sliding layers: θ=1e4, full head</text>';
+    verdict="IN: shard · OUT: shard — the freest op in the block";
+    fig="RoPE is elementwise-in-pairs: nothing to gather, ever.";
+    cap="<b>RoPE.</b> No reduction axis at all — each element pair rotates independently. Any sharding whatsoever survives RoPE untouched.";
+  }else if(step===4){
+    o+='<rect x="200" y="70" width="130" height="216" rx="12" fill="var(--panel2)" stroke="var(--line)"/>';
+    for(let s=0;s<8;s++){
+      const on=s===5;
+      o+='<rect x="210" y="'+(78+s*26)+'" width="110" height="22" rx="4" fill="'+(on?tint("var(--amber)",55):tint(DEV[0],22))+'"/>';
+      if(on)o+='<text x="340" y="'+(78+s*26+16)+'" class="svsm" fill="var(--amber)">← new token’s K,V land at pos mod 1024</text>';
+    }
+    o+='<path d="M 190 260 a 80 80 0 0 1 0 -160" fill="none" stroke="var(--faint)" stroke-width="1.4" stroke-dasharray="3 4" marker-end="url(#arh)"/>'
+      +'<text x="265" y="310" text-anchor="middle" class="svsm">1024-slot ring — the sliding window IS the cache size</text>';
+    o+='<rect x="620" y="100" width="52" height="34" rx="6" fill="'+tint(DEV[0],60)+'"/><text x="646" y="122" text-anchor="middle" class="svsm">kv0</text>'
+      +'<rect x="682" y="100" width="52" height="34" rx="6" fill="'+tint(DEV[0],60)+'"/><text x="708" y="122" text-anchor="middle" class="svsm">kv1</text>'
+      +'<text x="620" y="162" class="svsm">device 0 caches ONLY its 2 heads — the cache is born</text>'
+      +'<text x="620" y="180" class="svsm">sharded because the heads are. 1/8th of the KV memory each.</text>';
+    verdict="IN: shard · STATE: cache sharded by heads · OUT: shard";
+    fig="The paged KV cache inherits the head sharding.";
+    cap="<b>paged_update_cache.</b> Appends this token's local K,V heads into the device-local cache slice (a 1024-entry ring on sliding layers — cache_position_modulo). Nobody caches another device's heads, so long contexts split their KV memory 8 ways for free.";
+  }else if(step===5){
+    o+='<rect x="60" y="112" width="120" height="26" rx="5" fill="'+tint("var(--teal)",70)+'"/><text x="120" y="104" text-anchor="middle" class="svlbl" font-size="12.5">q — one head, 1×256</text>';
+    o+=opTxt(205,132,"·");
+    for(let k=0;k<8;k++)o+='<rect x="'+(230+k*70)+'" y="85" width="66" height="70" rx="4" fill="'+tint("var(--amber)",30+k*4)+'"/>';
+    o+='<text x="510" y="72" text-anchor="middle" class="svlbl" font-size="12.5">Kᵀ — EVERY token so far (of this head)</text>';
+    o+=zbar(230,190,560,26,()=>true,"var(--amber)","","scores 1×S — then softmax");
+    o+=zbrace(230,790,224,"softmax normalizes over the WHOLE sequence — reduction axis: SEQUENCE");
+    o+='<text x="850" y="105" class="svsm" font-size="12">sharded axis: <b>heads</b></text>'
+      +'<text x="850" y="125" class="svsm" font-size="12">reduced axis: <b>sequence</b></text>'
+      +'<text x="850" y="145" class="svsm" fill="var(--green)" font-size="12">different ⇒ still free ✓</text>'
+      +'<text x="850" y="180" class="svsm" font-size="12">sliding layers cap S at 1024;</text>'
+      +'<text x="850" y="198" class="svsm" font-size="12">global layers: S = full context.</text>'
+      +'<text x="850" y="230" class="svsm" fill="var(--amber)" font-size="12">shard the sequence instead and</text>'
+      +'<text x="850" y="248" class="svsm" fill="var(--amber)" font-size="12">this op breaks → slide 11 (ring)</text>';
+    verdict="IN: FULL SEQUENCE — but only its OWN heads · OUT: shard";
+    fig="SDPA is the one op that demands a complete axis: the sequence.";
+    cap="<b>SDPA.</b> softmax(QKᵀ)·V must see every cached token of its head — the full sequence axis. We sharded heads, not sequence, so it's local. This single fact decides the whole design: head-sharding survives SDPA, sequence-sharding does not (without the ring trick).";
+  }else if(step===6){
+    for(let k=0;k<4;k++){
+      o+='<rect x="'+(100+k*80)+'" y="100" width="60" height="42" rx="7" fill="'+tint("var(--teal)",65)+'"/>'
+        +'<text x="'+(130+k*80)+'" y="126" text-anchor="middle" class="svlbl">o'+k+"</text>"
+        +arrow(160+k*80,121,505,121,"var(--teal)");
+    }
+    o+='<rect x="520" y="100" width="300" height="42" rx="7" fill="'+tint("var(--teal)",75)+'"/>'
+      +'<text x="670" y="90" text-anchor="middle" class="svlbl" font-size="12.5">[1×1024] — 4 heads side by side</text>';
+    o+='<text x="520" y="180" class="svsm">no math, no reduction — pure layout. And the result is EXACTLY the</text>'
+      +'<text x="520" y="198" class="svsm">input strip the row-parallel o_proj expects. The two cuts interlock.</text>';
+    verdict="IN: shard · OUT: shard — shaped for row-parallel o_proj";
+    fig="concat_heads hands row-parallel exactly the strip it wants.";
+    cap="<b>concat_heads.</b> The local heads line up into [1×1024]. This is the hand-off that makes the Megatron pairing work: column-parallel's output ordering IS row-parallel's input ordering — no reshuffle CCL between them.";
+  }else if(step===7){
+    o+=zbar(50,130,180,40,k=>k===0,DEV[0],"attn₀ [1×1024]","device 0's slice of the logical 8192");
+    o+=opTxt(262,158,"×");
+    for(let k=0;k<8;k++)o+='<rect x="290" y="'+(75+k*17)+'" width="130" height="15" rx="2" fill="'+(k===0?tint(DEV[0],70):tint("var(--faint)",14))+'"/>';
+    o+='<text x="355" y="63" text-anchor="middle" class="svlbl" font-size="12.5">o_proj 8192×5376</text>';
+    o+='<text x="355" y="238" text-anchor="middle" class="svsm">row strip 0 — zero-padded to ×32 for the tile-aligned CCL</text>';
+    o+=opTxt(452,158,"=");
+    o+=zbar(490,130,440,44,()=>true,"var(--red)","y₀ [1×5376] — full-shaped, values PARTIAL","term 0 of an 8-term sum · Σ still owed");
+    o+=zbrace(490,930,182,"reduces over 8192 — device 0 owns 1024 of them → 1/8 of the answer");
+    verdict="IN: shard ✓ · W: ⅛ · OUT: FULL shape, PARTIAL values";
+    fig="Row-parallel: right shape, an eighth of the truth.";
+    cap="<b>o_proj.</b> The inner dim (8192 = 32 heads × 256) is exactly what's sharded — so no device can finish the sum alone. The debt every previous op deferred lands here as a full-shaped partial.";
+  }else{
+    o+=zbar(70,95,380,36,()=>true,"var(--faint)","x — residual (true, replicated)",null);
+    o+=opTxt(490,120,"+");
+    o+=zbar(70,175,380,36,()=>true,"var(--red)","attn(x) — partial on every device",null);
+    o+='<rect x="540" y="120" width="170" height="46" rx="10" fill="color-mix(in srgb,var(--amber) 24%,var(--panel2))" stroke="var(--amber)" stroke-width="2.2"/>'
+      +'<text x="625" y="148" text-anchor="middle" class="svlbl" fill="var(--amber)" font-weight="700">all_reduce</text>';
+    o+=arrow(460,120,535,138,"var(--faint)")+arrow(460,193,535,152,"var(--red)");
+    o+=arrow(715,143,760,143,"var(--amber)");
+    o+=zbar(775,120,330,44,()=>true,"var(--green)","x + attn(x) — true, replicated","the next block may begin");
+    o+='<text x="70" y="260" class="svsm">an elementwise add is trivially local — but only if its operands are TRUE values. Adding a partial into the residual would bake in a wrong answer ×8.</text>';
+    verdict="needs TRUE values ⇒ the block's single CCL fires here";
+    fig="The residual add is why the all-reduce cannot be skipped or moved later.";
+    cap="<b>+ residual.</b> decode.py:341 — apply_allreduce() sits precisely between o_proj and the residual add. Earlier is impossible (nothing to sum yet), later is wrong (the partial would contaminate the stream). One CCL, one legal position.";
+  }
+  const svg=$("zo-svg");svg.setAttribute("viewBox","0 0 1160 320");svg.innerHTML=o;
+  $("zo-verdict").innerHTML=verdict;
+  $("zo-fig").innerHTML=fig;
+  $("zo-cap").innerHTML="<b>"+(step+1)+"/9</b> — "+cap;
+}
+stepper("zo",8,zoRender,2400);
 /* ============================== slide 8 · all-reduce = RS + AG ============================== */
 function arSim(steps){ /* recompute state after `steps` ring steps (0..14) */
   const acc=Array.from({length:8},()=>Array(8).fill(1));
@@ -795,63 +1036,221 @@ function arRender(step){
 stepper("ar",14,arRender,650);
 
 /* ============================== slide 9 · sequence parallelism ============================== */
-let spMode="tp";
+let spMode="tp",spStep=0;
+function spMax(){return spMode==="sp"?4:3;}
 function spRender(){
-  const sp=spMode==="sp",y0=56,rh=34;
+  const sp=spMode==="sp",st=spStep,y0=56,rh=34;
   let o=DEFS;
   function region(x,w,t,sub){
     o+='<rect x="'+x+'" y="'+(y0-26)+'" width="'+w+'" height="'+(8*rh+38)+'" rx="10" fill="var(--panel2)" stroke="var(--line)"/>'
       +'<text x="'+(x+w/2)+'" y="'+(y0-8)+'" text-anchor="middle" class="svsm" font-weight="700">'+t+"</text>"
       +(sub?'<text x="'+(x+w/2)+'" y="'+(y0+8*rh+26)+'" text-anchor="middle" class="svsm">'+sub+"</text>":"");
   }
-  function ccl(x,t,col){
-    o+='<rect x="'+x+'" y="'+(y0-14)+'" width="64" height="'+(8*rh+14)+'" rx="10" fill="color-mix(in srgb,'+col+' 20%,var(--panel2))" stroke="'+col+'" stroke-width="1.8"/>';
+  function ccl(x,t,col,state){ /* state: 0 pending · 1 firing · 2 done */
+    o+='<rect x="'+x+'" y="'+(y0-14)+'" width="64" height="'+(8*rh+14)+'" rx="10" fill="'
+      +(state>=1?"color-mix(in srgb,"+col+" "+(state===1?"34":"16")+"%,var(--panel2))":"var(--panel2)")
+      +'" stroke="'+col+'" stroke-width="'+(state===1?3:1.6)+'"'+(state===0?' stroke-dasharray="5 5" opacity=".55"':"")+'/>';
     o+='<text x="'+(x+32)+'" y="'+(y0+4*rh)+'" text-anchor="middle" class="svsm" fill="'+col+'" font-weight="700" transform="rotate(-90 '+(x+32)+' '+(y0+4*rh)+')">'+t+"</text>";
+    if(state===1)o+='<text x="'+(x+32)+'" y="'+(y0-24)+'" text-anchor="middle" class="svsm" fill="'+col+'" font-weight="700">firing</text>';
   }
   for(let d=0;d<8;d++){
     const y=y0+d*rh;
     o+='<rect x="10" y="'+(y+2)+'" width="10" height="16" rx="2" fill="'+DEV[d]+'"/>'+lbl(26,y+15,"d"+d,"svsm");
   }
-  region(64,180,"attention block N","TP corridor · head-sharded");
-  ccl(258,sp?"reduce-scatter":"all-reduce",sp?"var(--teal)":"var(--amber)");
-  /* between-blocks region: the residual stream + norm */
+  /* block N with the o_proj partials it just produced */
+  region(64,180,"attention block N","o_proj → 8 partial copies");
+  for(let d=0;d<8;d++){
+    const y=y0+d*rh,drained=(st>=1);
+    o+='<rect x="84" y="'+(y+2)+'" width="140" height="16" rx="3" fill="'+tint("var(--red)",drained?12:34)+'"'+(drained?' stroke-dasharray="3 3" stroke="var(--line)"':"")+'/>';
+    if(d===0)o+=lbl(154,y+14,"partial","svsm","middle");
+  }
+  const exitFired=st>=1,exitState=st===1?1:(exitFired?2:0);
+  ccl(258,sp?"reduce-scatter":"all-reduce",sp?"var(--teal)":"var(--amber)",exitState);
+  /* between-blocks region */
   const bx=340,bw=460;
-  region(bx,bw,"between blocks — residual add · RMSNorm ·  (MLP would sit here too)",
-    sp?"stream lives sequence-sharded: 1× total · norm on S/8 tokens per device":"stream replicated: 8 identical copies · norm computed 8× redundantly");
+  region(bx,bw,"between blocks — residual add · RMSNorm · (MLP would sit here too)",
+    st>=1?(sp?"stream now sequence-sharded: 1× total":"stream replicated: 8 identical copies"):"…waiting for the exit CCL");
+  const segw=(bw-40)/8;
   for(let d=0;d<8;d++){
     const y=y0+d*rh;
+    if(!exitFired){ /* empty slots */
+      o+='<rect x="'+(bx+20)+'" y="'+(y+2)+'" width="'+(bw-40)+'" height="16" rx="3" fill="none" stroke="var(--line)" stroke-dasharray="3 4"/>';
+      continue;
+    }
+    const norming=st===2;
     if(sp){
-      const segw=(bw-40)/8;
-      o+='<rect x="'+(bx+20+d*segw)+'" y="'+(y+2)+'" width="'+(segw-4)+'" height="16" rx="3" fill="'+tint("var(--violet)",70)+'"/>';
+      o+='<rect x="'+(bx+20+d*segw)+'" y="'+(y+2)+'" width="'+(segw-4)+'" height="16" rx="3" fill="'+tint("var(--violet)",norming?90:70)+'"'+(norming?' stroke="var(--text)" stroke-width="1.3"':"")+'/>';
       o+=lbl(bx+20+d*segw+segw/2-2,y+14,"t"+d,"svsm","middle");
     }else{
-      o+='<rect x="'+(bx+20)+'" y="'+(y+2)+'" width="'+(bw-40)+'" height="16" rx="3" fill="'+NEUT+'"/>';
-      o+=lbl(bx+bw/2,y+14,"full copy of [S×5376]","svsm","middle");
+      o+='<rect x="'+(bx+20)+'" y="'+(y+2)+'" width="'+(bw-40)+'" height="16" rx="3" fill="'+NEUT+'"'+(norming?' stroke="var(--red)" stroke-width="1.3"':"")+'/>';
+      o+=lbl(bx+bw/2,y+14,norming?"RMSNorm( the same [S×5376] )":"full copy of [S×5376]","svsm","middle");
+    }
+    if(st===1){ /* CCL arrows: partials → stream */
+      const tx=sp?bx+20+d*segw:bx+20;
+      o+=arrow(226,y+10,tx-4,y+10,sp?"var(--teal)":"var(--amber)");
     }
   }
-  if(sp)ccl(bx+bw+14,"all-gather","var(--violet)");
-  region(sp?bx+bw+92:bx+bw+14,180,"attention block N+1","TP corridor again");
-  const endx=(sp?bx+bw+92:bx+bw+14)+180;
-  /* memory bars */
-  const my=y0+8*rh+56;
-  o+=lbl(64,my,"activation memory held between blocks:","axt2");
-  o+='<rect x="360" y="'+(my-12)+'" width="'+(sp?40:320)+'" height="14" rx="3" fill="'+(sp?tint("var(--violet)",75):NEUT)+'"/>';
-  o+=lbl(sp?408:688,my,sp?"S×5376 — ÷8":"8 × S×5376","svsm");
+  if(st===2&&sp)o+='<text x="'+(bx+bw/2)+'" y="'+(y0-38)+'" text-anchor="middle" class="svsm" fill="var(--green)" font-weight="700">norm on S/8 tokens each — no work repeated</text>';
+  if(st===2&&!sp)o+='<text x="'+(bx+bw/2)+'" y="'+(y0-38)+'" text-anchor="middle" class="svsm" fill="var(--red)" font-weight="700">the SAME norm, computed 8× — 7 results thrown away</text>';
+  const agX=bx+bw+14,agFired=st>=3;
+  if(sp)ccl(agX,"all-gather","var(--violet)",st===3?1:(agFired?2:0));
+  /* block N+1 */
+  const n1x=sp?bx+bw+92:bx+bw+14;
+  region(n1x,180,"attention block N+1",sp?(agFired?"replicated again — QKV may run":"…waiting for the gather"):(st>=2?"replicated input ready":""));
+  const n1ready=sp?agFired:st>=2;
+  for(let d=0;d<8;d++){
+    const y=y0+d*rh;
+    if(n1ready)o+='<rect x="'+(n1x+20)+'" y="'+(y+2)+'" width="140" height="16" rx="3" fill="'+NEUT+'"/>';
+    if(sp&&st===3)o+=arrow(agX+64,y+10,n1x+16,y+10,"var(--violet)");
+  }
+  const endx=n1x+180;
+  /* memory bars — final step only */
+  const my=y0+8*rh+56,fin=st>=spMax();
+  if(fin){
+    o+=lbl(64,my,"activation memory held between blocks:","axt2");
+    o+='<rect x="360" y="'+(my-12)+'" width="'+(sp?40:320)+'" height="14" rx="3" fill="'+(sp?tint("var(--violet)",75):NEUT)+'"/>';
+    o+=lbl(sp?408:688,my,sp?"S×5376 — ÷8":"8 × S×5376","svsm");
+  }
   const svg=$("sp-svg");svg.setAttribute("viewBox","0 0 "+Math.max(endx+20,1080)+" "+(my+22));svg.innerHTML=o;
-  $("sp-cap").innerHTML=sp
-    ?"TP + SP: the all-reduce is split — <b class='t'>RS</b> at the exit, <b class='v'>AG</b> at the next entry. Wire bytes: RS (0.875×) + AG (0.875×) = <b>the same 1.75×</b>."
-    :"plain TP (what gemma4 runs today): the all-reduce re-replicates the stream, and everything between blocks is done 8× over.";
-  $("sp-note").innerHTML=sp
-    ?"<b>Why this is free bandwidth-wise:</b> slide 8 showed all-reduce IS reduce-scatter + all-gather back-to-back. SP just refuses to do the gather until the moment something (the QKV matmul) genuinely needs full hidden width — and parks the norms, residual adds and dropout in the sharded gap. For a 128k-token prefill on Gemma-4 that's 128k×5376×2B ≈ <b>1.4 GB per copy</b> you stop holding 8×. The repo's building blocks already exist: <code>MeshConfig.allreduce</code> is implemented as RS+AG (<code>config.py</code>), and <code>ccl.py</code> carries the commented-out decomposed path with a TODO."
-    :"<b>The cost nobody bills:</b> replication means device 0's RMSNorm result equals device 7's, computed twice… ×8. Harmless for one decode token; real money for long prefill. Flip the toggle.";
+  const capsTP=[
+    "<b>1/4 · block exit.</b> o_proj just finished — every device holds a full-shaped <b class='r'>partial</b> of the block's output.",
+    "<b>2/4 · all-reduce fires.</b> The 8 partials are summed and the TRUE stream lands <b>replicated</b> — 8 identical copies of [S×5376].",
+    "<b>3/4 · the norm region.</b> Every device runs RMSNorm over the SAME full stream. Correct — and 8× redundant.",
+    "<b>4/4 · steady state of plain TP</b> (what gemma4 ships): correctness bought with replication, paid in memory and repeated norm work."];
+  const capsSP=[
+    "<b>1/5 · block exit.</b> Same starting point: 8 full-shaped <b class='r'>partials</b>.",
+    "<b>2/5 · reduce-scatter fires</b> — HALF the all-reduce. Device i receives the true Σ for <b>its token slice only</b>: the stream is now sequence-sharded.",
+    "<b>3/5 · the norm runs sharded.</b> RMSNorm needs full <i>hidden</i> width — which every shard has. Each device norms S/8 tokens: same math, an eighth of the work, zero redundancy.",
+    "<b>4/5 · all-gather fires</b> — the other half — at the moment the NEXT block's QKV matmul genuinely needs full hidden width. Not a byte earlier.",
+    "<b>5/5 · steady state of TP+SP:</b> identical wire bytes (RS+AG = AR, slide 8), activations between blocks ÷8."];
+  $("sp-cap").innerHTML=(sp?capsSP:capsTP)[Math.min(st,spMax())];
+  $("sp-note").innerHTML=!fin
+    ?(sp?"Watch where the stream <i>lives</i> after each step — the violet staircase is the whole idea.":"Baseline first. Then flip to <b>TP + SP</b> and replay — same clip, different life for the stream.")
+    :(sp
+      ?"<b>Why this is free bandwidth-wise:</b> the all-reduce IS reduce-scatter + all-gather back-to-back. SP just refuses to do the gather until something genuinely needs full hidden width — and parks the norms, residual adds and (in training) dropout in the sharded gap. For a 128k-token prefill on Gemma-4 that's 128k×5376×2B ≈ <b>1.4 GB per copy</b> you stop holding 8×. The repo's building blocks exist: <code>MeshConfig.allreduce</code> is RS+AG (<code>config.py</code>), and <code>ccl.py</code> carries the commented-out decomposed path with a TODO."
+      :"<b>The cost nobody bills:</b> device 0's RMSNorm result equals device 7's — computed 8×. Harmless for one decode token; real money for long prefill. Flip the toggle and replay.");
 }
+function spGo(s){spStep=Math.max(0,Math.min(spMax(),s));spRender();}
+$("sp-step").onclick=()=>spGo(spStep+1);
+$("sp-reset").onclick=()=>spGo(0);
+$("sp-play").onclick=()=>{
+  spGo(0);
+  const id=every(1300,()=>{if(spStep>=spMax()){clearInterval(id);return;}spGo(spStep+1);});
+};
 document.querySelectorAll("button[data-sp]").forEach(b=>{
-  b.onclick=()=>{spMode=b.dataset.sp;
+  b.onclick=()=>{spMode=b.dataset.sp;spStep=0;
     document.querySelectorAll("button[data-sp]").forEach(x=>x.classList.toggle("on",x===b));spRender();};
 });
 spRender();
 
-/* ============================== slide 10 · full graph ============================== */
+/* ============================== slide 11 · ring SDPA ============================== */
+function rsRender(step){ /* step 0..8: blocks computed per device */
+  const rh=46,y0=60;
+  let o=DEFS;
+  o+=lbl(20,26,"the ring — Q pinned, KV visiting","axt2");
+  for(let i=0;i<8;i++){
+    const y=y0+i*rh;
+    o+='<rect x="14" y="'+(y+6)+'" width="10" height="22" rx="2" fill="'+DEV[i]+'"/>'+lbl(30,y+21,"dev "+i,"svsm");
+    o+='<rect x="92" y="'+y+'" width="70" height="34" rx="7" fill="'+tint(DEV[i],70)+'"/>'
+      +'<text x="127" y="'+(y+22)+'" text-anchor="middle" class="svlbl" font-size="12.5">Q'+i+"</text>";
+    /* visiting KV block */
+    if(step<8){
+      const j=(i-step+16)%8;
+      o+='<rect x="178" y="'+y+'" width="86" height="34" rx="7" fill="'+tint(DEV[j],62)+'" stroke="'+DEV[j]+'" stroke-width="1.4" stroke-dasharray="'+(j===i?"none":"4 3")+'"/>'
+        +'<text x="221" y="'+(y+22)+'" text-anchor="middle" class="svlbl" font-size="12.5">KV'+j+(j===i?" (home)":"")+"</text>";
+    }else{
+      o+='<rect x="178" y="'+y+'" width="86" height="34" rx="7" fill="none" stroke="var(--green)"/>'
+        +'<text x="221" y="'+(y+22)+'" text-anchor="middle" class="svsm" fill="var(--green)">done ✓</text>';
+    }
+    /* ring edge to next row */
+    if(step>0&&step<8){
+      if(i<7)o+=arrow(221,y+38,221,y+rh-4,"var(--amber)");
+    }
+    /* online-softmax accumulator */
+    o+='<rect x="290" y="'+(y+10)+'" width="128" height="14" rx="3" fill="'+tint("var(--faint)",12)+'"/>'
+      +'<rect x="290" y="'+(y+10)+'" width="'+(128*step/8)+'" height="14" rx="3" fill="'+tint("var(--violet)",70)+'"/>';
+    if(i===0)o+=lbl(354,y-6,"accumulator Oᵢ, lᵢ, mᵢ","svsm","middle");
+  }
+  if(step>0&&step<8){ /* wrap-around hop dev7 → dev0 */
+    o+='<path d="M 270 '+(y0+7*rh+17)+' C 320 '+(y0+7*rh+17)+' 320 '+(y0+17)+' 270 '+(y0+17)+'" fill="none" stroke="var(--amber)" stroke-width="1.6" opacity=".6" marker-end="url(#arh)"/>';
+  }
+  /* coverage matrix */
+  const mx=560,my=y0,cs=42;
+  o+=lbl(mx,26,"coverage — SDPA(Qᵢ, KVⱼ) blocks done","axt2");
+  for(let j=0;j<8;j++)o+=lbl(mx+j*cs+cs/2-3,my-10,"KV"+j,"svsm","middle");
+  for(let i=0;i<8;i++){
+    o+=lbl(mx-12,my+i*cs+cs/2+4,"Q"+i,"svsm","end");
+    for(let j=0;j<8;j++){
+      const d=(i-j+8)%8,done=d<step,curr=d===step&&step<8;
+      o+='<rect x="'+(mx+j*cs)+'" y="'+(my+i*cs)+'" width="'+(cs-5)+'" height="'+(cs-5)+'" rx="5" fill="'
+        +(done?tint(DEV[j],55):(curr?tint("var(--amber)",26):tint("var(--faint)",8)))
+        +'"'+(curr?' stroke="var(--amber)" stroke-width="1.6" stroke-dasharray="4 3"':(done?' stroke="'+DEV[j]+'" stroke-width="1"':""))+'/>';
+      if(done)o+='<text x="'+(mx+j*cs+(cs-5)/2)+'" y="'+(my+i*cs+cs/2+2)+'" text-anchor="middle" class="svsm" fill="var(--text)">✓</text>';
+    }
+  }
+  if(step<8){
+    o+=lbl(mx,my+8*cs+22,"one wrapped diagonal per step —","svsm");
+    o+=lbl(mx,my+8*cs+38,"computed with the KV each device holds right now","svsm");
+  }else{
+    o+=lbl(mx,my+8*cs+22,"64/64 — full attention over all tokens,","svsm");
+    o+=lbl(mx,my+8*cs+38,"and no device ever held more than 2 KV shards at once","svsm");
+  }
+  const svg=$("rs-svg");svg.setAttribute("viewBox","0 0 940 "+(y0+8*rh+56));svg.innerHTML=o;
+  $("rs-hops").textContent=Math.max(0,Math.min(step,7))+"/7";
+  $("rs-done").textContent=(step*8)+"/64";
+  $("rs-note").innerHTML=step===0
+    ?"<b>Start:</b> device i holds Qᵢ and its home KVᵢ — it can already compute the diagonal without receiving anything."
+    :step<8?"<b>Step "+step+":</b> compute SDPA(Qᵢ, visiting block) and fold it into (Oᵢ, lᵢ, mᵢ) — the online-softmax running max, denominator and weighted sum — then pass the KV block along the ring. <b class='t'>The hop travels while the math runs</b>: with compute ≳ comm per block, the wire disappears."
+    :"<b>Done.</b> Every Q shard has seen every KV shard: softmax over ALL tokens, assembled from 8 partial passes — no full [S×S] score matrix, no full KV on any chip. Causal masking makes half these blocks trivial; real schedules (zig-zag rings) rebalance that skew.";
+}
+stepper("rs",8,rsRender,850);
+
+/* ============================== slide 12 · overlap AG⊗matmul ============================== */
+const OV={HOP:2,CH:2,HOPS:7,CHUNKS:8};
+function ovRender(t){
+  const sx=32,x0=210,serialMM=OV.HOPS*OV.HOP; /* serial matmul starts at 14 */
+  let o=DEFS;
+  function lane(y,name){
+    o+=lbl(x0-14,y+17,name,"svsm","end");
+    o+='<rect x="'+x0+'" y="'+y+'" width="'+(30*sx)+'" height="26" rx="4" fill="'+tint("var(--faint)",8)+'"/>';
+  }
+  function blk(y,a,b,col,label){
+    const vis=Math.min(b,t);if(vis<=a)return;
+    o+='<rect x="'+(x0+a*sx)+'" y="'+y+'" width="'+((vis-a)*sx-2)+'" height="26" rx="4" fill="'+tint(col,62)+'" stroke="'+col+'" stroke-width="1"/>';
+    if(label&&vis>=b)o+='<text x="'+(x0+(a+b)/2*sx)+'" y="'+(y+18)+'" text-anchor="middle" class="svsm">'+label+"</text>";
+  }
+  /* time axis */
+  for(let g=0;g<=30;g+=2)o+='<line x1="'+(x0+g*sx)+'" y1="40" x2="'+(x0+g*sx)+'" y2="300" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 6"/>'+(g%4===0?lbl(x0+g*sx,318,g,"svsm","middle"):"");
+  /* clock cursor */
+  o+='<line x1="'+(x0+Math.min(t,30)*sx)+'" y1="34" x2="'+(x0+Math.min(t,30)*sx)+'" y2="304" stroke="var(--text)" stroke-width="1.6"/>';
+  /* serial panel */
+  o+=lbl(20,60,"SERIAL — all_gather, then matmul","axt2");
+  lane(74,"wire");lane(110,"FPU");
+  for(let k=1;k<=OV.HOPS;k++)blk(74,(k-1)*OV.HOP,k*OV.HOP,"var(--amber)","h"+k);
+  for(let k=0;k<OV.CHUNKS;k++)blk(110,serialMM+k*OV.CH,serialMM+(k+1)*OV.CH,"var(--teal)","c"+k);
+  if(t>=serialMM+8*OV.CH)o+='<text x="'+(x0+30*sx+12)+'" y="128" class="svlbl" fill="var(--red)" font-size="13" font-weight="700">done @30</text>';
+  else if(t>0&&t<serialMM)o+='<text x="'+(x0+Math.min(t,30)*sx+8)+'" y="128" class="svsm" fill="var(--red)">FPU idle…</text>';
+  /* fused panel */
+  o+=lbl(20,200,"FUSED — all_gather_matmul_async: chunk k starts when shard k arrives","axt2");
+  lane(214,"wire");lane(250,"FPU");
+  for(let k=1;k<=OV.HOPS;k++)blk(214,(k-1)*OV.HOP,k*OV.HOP,"var(--amber)","h"+k);
+  for(let k=0;k<OV.CHUNKS;k++)blk(250,k*OV.CH,(k+1)*OV.CH,"var(--teal)","c"+k);
+  if(t>=8*OV.CH)o+='<text x="'+(x0+16*sx+12)+'" y="268" class="svlbl" fill="var(--green)" font-size="13" font-weight="700">done @16 ✓</text>';
+  /* shard-arrival ticks on fused FPU lane */
+  for(let k=1;k<=OV.HOPS;k++)if(t>=k*OV.HOP)
+    o+='<line x1="'+(x0+k*OV.HOP*sx)+'" y1="244" x2="'+(x0+k*OV.HOP*sx)+'" y2="252" stroke="var(--amber)" stroke-width="2"/>';
+  const svg=$("ov-svg");svg.setAttribute("viewBox","0 0 "+(x0+30*sx+120)+" 336");svg.innerHTML=o;
+  $("ov-clk").textContent=Math.min(t,30);
+  $("ov-cap").innerHTML=t===0
+    ?"<b>Press race.</b> Both versions move the same 7 shards and compute the same 8 chunks."
+    :t<14?"<b>t="+t+":</b> serial's FPU sits idle while the ring delivers · fused is computing chunk "+Math.min(Math.floor(t/OV.CH),7)+" while hop "+Math.min(Math.ceil(t/OV.HOP),7)+" is in flight — <b class='t'>wire under compute</b>."
+    :t<16?"<b>t="+t+":</b> serial finally starts its matmul; fused is on its last chunk."
+    :t<30?"<b>t="+t+":</b> fused finished at t=16. Serial grinds on — it paid the full gather up front."
+    :"<b>t=30 · verdict:</b> 30 vs 16 ticks ≈ <b class='g'>1.9×</b> — same bytes, same FLOPs. The CCL didn't get faster; it stopped being on the critical path. (Works whenever per-chunk compute ≳ per-hop wire time.)";
+}
+stepper("ov",30,ovRender,150);
+
+/* ============================== slide 13 · full graph ============================== */
 let grMode="tp";
 function grRender(){
   const sp=grMode==="sp",y=96,bh=58;

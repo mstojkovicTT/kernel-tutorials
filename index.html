@@ -83,9 +83,9 @@ footer a{color:var(--teal);text-decoration:none}
       <span>
         <span class="nm">Tensor Parallel Dojo</span>
         <span class="ds" style="display:block">One Gemma-4 attention block, eight chips: Megatron column/row
-        cuts, dealing GQA heads to devices, the zero-communication corridor, the single all-reduce that
-        closes the block — and what sequence parallelism changes.</span>
-        <span class="chips"><code>column-parallel</code><code>row-parallel</code><code>ttnn.all_reduce</code><code>reduce-scatter + all-gather</code><code>GQA</code><code>kv_replicated</code></span>
+        cuts, dealing GQA heads to devices, an op-by-op zoom on full-tensor vs shard, the single
+        all-reduce that closes the block, sequence parallelism, ring SDPA, and hiding CCLs under matmuls.</span>
+        <span class="chips"><code>column-parallel</code><code>row-parallel</code><code>ttnn.all_reduce</code><code>reduce-scatter + all-gather</code><code>GQA</code><code>ring SDPA</code><code>all_gather_matmul_async</code></span>
       </span>
       <span class="go">open ▸</span>
     </a>
