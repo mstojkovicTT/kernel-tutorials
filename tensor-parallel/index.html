@@ -1,0 +1,907 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tensor Parallel Dojo</title>
+<meta name="description" content="How one Gemma-4 attention block splits across 8 chips — Megatron-style tensor parallelism, where the CCLs go, where data flows with zero communication, and what sequence parallelism changes.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪓</text></svg>">
+<style>
+/* ---------- tokens: dark-first (deliberate), light overrides both ways ---------- */
+:root{
+  --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
+  --line:#2a3245; --text:#e6eaf3; --muted:#8f97ab; --faint:#5b647a;
+  --teal:#45c8bb; --amber:#e8a84c; --violet:#9d7bf5; --red:#ef6b6b; --green:#5bc17e;
+  --hl:#233048;
+  --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f2f3f7; --panel:#ffffff; --panel2:#e9ebf3; --code-bg:#f6f7fb;
+    --line:#d4d8e4; --text:#20263a; --muted:#5d6579; --faint:#8b92a6;
+    --teal:#0d8f82; --amber:#a86f10; --violet:#6b46d8; --red:#c04545; --green:#2e8f57;
+    --hl:#dfe7f5;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f2f3f7; --panel:#ffffff; --panel2:#e9ebf3; --code-bg:#f6f7fb;
+  --line:#d4d8e4; --text:#20263a; --muted:#5d6579; --faint:#8b92a6;
+  --teal:#0d8f82; --amber:#a86f10; --violet:#6b46d8; --red:#c04545; --green:#2e8f57;
+  --hl:#dfe7f5;
+}
+:root[data-theme="dark"]{
+  --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
+  --line:#2a3245; --text:#e6eaf3; --muted:#8f97ab; --faint:#5b647a;
+  --teal:#45c8bb; --amber:#e8a84c; --violet:#9d7bf5; --red:#ef6b6b; --green:#5bc17e;
+  --hl:#233048;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:15px;line-height:1.55;overflow:hidden}
+h1,h2,h3{font-family:var(--mono);letter-spacing:-.02em;text-wrap:balance;margin:0}
+code,pre,kbd,.mono{font-family:var(--mono)}
+button{font-family:var(--mono);cursor:pointer}
+a{color:var(--teal)}
+
+#deck{height:calc(100% - 52px);position:relative}
+.slide{display:none;height:100%;overflow-y:auto;overflow-x:hidden}
+.slide.active{display:block;animation:fadein .28s ease}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){
+  .slide.active{animation:none}
+  .pulse,.flow{animation:none !important}
+}
+.wrap{max-width:1280px;margin:0 auto;padding:28px 40px 40px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.eyebrow b{color:var(--teal);font-weight:600}
+h2{font-size:26px;margin-bottom:6px}
+.lede{color:var(--muted);max-width:74ch;margin:4px 0 20px}
+.lede code{color:var(--text);font-size:.92em}
+.src-note{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:18px}
+.t{color:var(--teal)} .a{color:var(--amber)} .v{color:var(--violet)} .r{color:var(--red)} .g{color:var(--green)}
+
+/* ---------- deck bar ---------- */
+#deckbar{height:52px;border-top:1px solid var(--line);background:var(--panel);
+  display:flex;align-items:center;gap:14px;padding:0 20px}
+#deckbar .title{font-family:var(--mono);font-size:12px;color:var(--muted);flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#deckbar .dots{display:flex;gap:8px}
+#deckbar .dots button{width:10px;height:10px;border-radius:50%;border:1px solid var(--faint);
+  background:transparent;padding:0}
+#deckbar .dots button.on{background:var(--teal);border-color:var(--teal)}
+#deckbar .dots button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.navbtn{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+  border-radius:6px;padding:6px 14px;font-size:13px}
+.navbtn:hover{border-color:var(--teal)}
+.navbtn:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+#pgnum{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:44px;text-align:center}
+
+/* ---------- title slide ---------- */
+.hero{display:flex;flex-direction:column;justify-content:center;min-height:82%;max-width:1100px;margin:0 auto;padding:40px}
+.hero h1{font-size:clamp(38px,6vw,68px);line-height:1.06;font-weight:700}
+.hero h1 .dim{color:var(--faint)}
+.hero .sub{font-size:17px;color:var(--muted);max-width:66ch;margin-top:18px}
+.hero .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:30px}
+kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;font-size:11px;background:var(--panel)}
+.api-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:22px}
+.api-chips code{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:4px 10px;font-size:12.5px}
+.api-chips .c-t{color:var(--teal)} .api-chips .c-a{color:var(--amber)} .api-chips .c-v{color:var(--violet)}
+
+/* ---------- generic panels & tables ---------- */
+.panelbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+table.opstable{border-collapse:collapse;width:100%;font-size:14px}
+table.opstable th,table.opstable td{border:1px solid var(--line);padding:8px 13px;text-align:left}
+table.opstable th{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--panel2)}
+table.opstable code{font-size:13px}
+table.opstable td.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+blockquote.rule{border-left:3px solid var(--teal);margin:18px 0;padding:10px 20px;background:var(--panel);
+  border-radius:0 8px 8px 0;font-size:16px;max-width:78ch}
+blockquote.rule b{color:var(--teal)}
+.twocol{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin-top:18px}
+@media (max-width:900px){.twocol{grid-template-columns:1fr}}
+
+/* ---------- sim controls ---------- */
+.simbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0 16px}
+.simbar .sp{flex:1}
+.ctl{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:6px;
+  padding:7px 16px;font-size:13px}
+.ctl:hover{border-color:var(--teal)}
+.ctl:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.ctl.primary{background:var(--teal);color:var(--bg);border-color:var(--teal);font-weight:700}
+.optgrp{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.optgrp button{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px}
+.optgrp button.on{border-color:var(--teal);color:var(--teal);background:color-mix(in srgb,var(--teal) 10%,transparent)}
+.optgrp button:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.stepcap{font-family:var(--mono);font-size:12.5px;color:var(--muted);background:var(--code-bg);
+  border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin-top:12px;min-height:44px}
+.stepcap b{color:var(--text)}
+
+/* figures */
+figure.viz{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;overflow-x:auto}
+figure.viz svg{display:block;max-width:100%;height:auto;margin:0 auto}
+figure.viz figcaption{font-size:12.5px;color:var(--muted);margin-top:10px;text-align:center}
+.axt{font-family:var(--mono);font-size:11px;fill:var(--muted)}
+.axt2{font-family:var(--mono);font-size:11px;fill:var(--text);font-weight:700}
+.svlbl{font-family:var(--mono);font-size:12px;fill:var(--text)}
+.svsm{font-family:var(--mono);font-size:10px;fill:var(--muted)}
+
+/* legend chips */
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:10px;justify-content:center}
+.legend .sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:5px}
+</style>
+</head>
+<body>
+<div id="deck"></div>
+<div id="deckbar">
+  <button class="navbtn" id="prevb">←</button>
+  <button class="navbtn" id="nextb">→</button>
+  <span id="pgnum">1/11</span>
+  <span class="title" id="barTitle"></span>
+  <span class="dots" id="dots"></span>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+/* device palette: 8 distinguishable hues that read on both grounds */
+const DEV=["#45c8bb","#e8a84c","#9d7bf5","#5bc17e","#ef6b6b","#5aa7e8","#e86fb4","#c9c25a"];
+const SLIDES=[];
+/* ============================== slide 1 · title ============================== */
+SLIDES.push({t:"Tensor Parallel Dojo",h:`
+<div class="hero">
+  <p class="eyebrow"><b>tt-metal</b> · models/demos/gemma4 · splitting attention across a mesh</p>
+  <h1>One attention block,<br>eight chips<span class="dim">.</span></h1>
+  <p class="sub">Gemma-4-31B does not fit on one Wormhole. This deck splits a single
+  attention block Megatron-style across a T3K's 8 devices — and finds the surprising answer to
+  "where do we need CCLs?": <b>almost nowhere</b>. One all-reduce per block, and a long
+  zero-communication corridor everything else flows through.</p>
+  <div class="api-chips">
+    <code class="c-t">column-parallel</code><code class="c-t">row-parallel</code>
+    <code class="c-a">ttnn.all_reduce</code><code class="c-a">reduce-scatter + all-gather</code>
+    <code class="c-v">GQA 32Q : 16KV</code><code class="c-v">per-head QK-norm</code>
+  </div>
+  <p class="hint">navigate with <kbd>←</kbd> <kbd>→</kbd> · every animation has a play button</p>
+</div>`});
+
+/* ============================== slide 2 · the block ============================== */
+SLIDES.push({t:"The patient: one Gemma-4-31B attention block",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>01</b> · the patient</p>
+  <h2>What we're splitting</h2>
+  <p class="lede">Gemma-4-31B: 31&thinsp;B params ≈ <b class="r">62 GB</b> in bf16. One Wormhole has
+  <b>12 GB</b> of DRAM. The model ships on a T3K (1×8 mesh) with <b class="t">TP&thinsp;=&thinsp;8</b> —
+  every weight matrix in every block is cut into 8 pieces. Here is one attention block's anatomy,
+  straight from <code>configs/gemma-4-31B-it/config.json</code>:</p>
+  <div class="twocol">
+    <div>
+      <table class="opstable">
+        <tr><th></th><th>sliding layers (50 of 60)</th><th>global layers (10 of 60)</th></tr>
+        <tr><td>Q heads</td><td class="num">32 × d<sub>h</sub>=256</td><td class="num">32 × d<sub>h</sub>=512</td></tr>
+        <tr><td>KV heads</td><td class="num">16 <span class="v">(GQA 2:1)</span></td><td class="num">4 <span class="v">(GQA 8:1)</span>, K=V tied</td></tr>
+        <tr><td>attends to</td><td class="num">window = 1024</td><td class="num">full context (262k max)</td></tr>
+        <tr><td>RoPE θ</td><td class="num">10&thinsp;000</td><td class="num">1&thinsp;000&thinsp;000 · partial 0.25</td></tr>
+        <tr><td><code>wqkv</code></td><td class="num">5376 × 16384</td><td class="num">5376 × (16384+2048+2048)</td></tr>
+        <tr><td><code>o_proj</code></td><td class="num">8192 × 5376</td><td class="num">16384 × 5376</td></tr>
+      </table>
+      <p class="src-note">pattern: 5 sliding : 1 global, repeating — global attention at layers 5, 11, … 59</p>
+    </div>
+    <div>
+      <div class="panelbox">
+        <h3 style="font-size:15px;margin-bottom:10px">Gemma-4 quirks that matter for splitting</h3>
+        <ul style="margin:0;padding-left:20px;color:var(--muted);font-size:14px;line-height:1.75">
+          <li><b class="t">Per-head RMSNorm on Q and K</b> (learned) — and an
+            <b class="v">unweighted RMSNorm on V</b>. Per-head = friendly to head-sharding.</li>
+          <li><b>SDPA scale = 1.0</b>, not 1/√d — the QK norms already control magnitude.</li>
+          <li><b>No bias</b> on any projection.</li>
+          <li><b class="a">Global layers have only 4 KV heads</b> — fewer than our 8 devices.
+            That forces a decision (slide 8).</li>
+        </ul>
+      </div>
+      <blockquote class="rule" style="margin-bottom:0">The whole game: cut <code>wqkv</code> and
+      <code>o_proj</code> so that <b>everything between them never crosses a chip boundary</b>.</blockquote>
+    </div>
+  </div>
+  <p class="src-note">source: models/demos/gemma4/configs/gemma-4-31B-it/config.json · tt/attention/weights.py</p>
+</div>`});
+
+/* ============================== slide 3 · column-parallel ============================== */
+SLIDES.push({t:"Megatron move #1 — column-parallel linear",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>02</b> · megatron-lm move #1</p>
+  <h2>Column-parallel: split W by columns, get output slices</h2>
+  <p class="lede">Y = X·W. Cut <b>W by columns</b> into [W₀ W₁ … W₇] and give one strip to each device.
+  Every device keeps a <b>full replica of X</b> and computes its own slice Yᵢ = X·Wᵢ.
+  The full Y = [Y₀ Y₁ … Y₇] exists only <i>logically</i>, spread across the mesh —
+  and if the next op is happy with a slice, <b class="g">nobody ever gathers it</b>.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="cp-play">▶ play</button>
+    <button class="ctl" id="cp-step">step</button>
+    <button class="ctl" id="cp-reset">reset</button>
+    <span class="optgrp">devices:
+      <button data-cpn="2">2</button><button data-cpn="4" class="on">4</button><button data-cpn="8">8</button></span>
+    <span class="sp"></span>
+  </div>
+  <figure class="viz">
+    <svg id="cp-svg" role="img" aria-label="Column-parallel linear: X replicated on every device, W split into column strips, each device computing one vertical slice of Y with no communication"></svg>
+    <figcaption id="cp-cap">X replicated · W column-sharded · Y born sharded — <b class="g">zero communication</b></figcaption>
+  </figure>
+  <div class="stepcap" id="cp-note"><b>This is exactly how <code>wqkv</code> is cut.</b>
+  In weights.py Q, K and V are fused into one 5376×16384 matrix, then column-sharded with
+  <code>ShardTensor2dMesh(dims=(None,&nbsp;-1))</code> — each device's strip holds 4 Q heads + 2 KV heads.</div>
+</div>`});
+
+/* ============================== slide 4 · row-parallel ============================== */
+SLIDES.push({t:"Megatron move #2 — row-parallel linear",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>03</b> · megatron-lm move #2</p>
+  <h2>Row-parallel: split W by rows, pay one all-reduce</h2>
+  <p class="lede">Now the input X arrives <b>already column-sharded</b> (each device holds a slice Xᵢ —
+  exactly what move #1 left us). Cut <b>W by rows</b> so Xᵢ lines up with Wᵢ.
+  Each device computes Xᵢ·Wᵢ — a <b>full-shaped</b> matrix, but only a
+  <b class="r">partial sum</b>. The true Y = ΣXᵢ·Wᵢ needs every device's contribution:
+  <b class="a">this is where the CCL is born</b>.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="rp-play">▶ play</button>
+    <button class="ctl" id="rp-step">step</button>
+    <button class="ctl" id="rp-reset">reset</button>
+    <span class="optgrp">devices:
+      <button data-rpn="2">2</button><button data-rpn="4" class="on">4</button><button data-rpn="8">8</button></span>
+    <span class="sp"></span>
+  </div>
+  <figure class="viz">
+    <svg id="rp-svg" role="img" aria-label="Row-parallel linear: sharded input times row-sharded W yields full-shaped partial sums on every device, which an all-reduce must add together"></svg>
+    <figcaption id="rp-cap">Xᵢ · Wᵢ = full-shaped <b class="r">partial</b> — the all-reduce adds all 4 into the real Y</figcaption>
+  </figure>
+  <div class="stepcap" id="rp-note"><b>This is exactly how <code>o_proj</code> is cut</b> — row-sharded with
+  <code>ShardTensor2dMesh(dims=(-2,&nbsp;None))</code>, local rows zero-padded to a multiple of 32 so the
+  CCL that follows stays tile-aligned (weights.py:60-64).</div>
+</div>`});
+/* ============================== slide 5 · the pairing ============================== */
+SLIDES.push({t:"The Megatron pairing — one CCL per block",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>04</b> · the pairing</p>
+  <h2>column · local · row = one all-reduce</h2>
+  <p class="lede">Alone, each move is half a trick. <b>Chained, they cancel:</b> the column-parallel
+  layer leaves its output sharded, the ops in the middle work shard-local, and the row-parallel layer
+  absorbs the sharded input — deferring all communication to a <b class="a">single all-reduce at the
+  block's exit</b>. Megatron-LM calls the boundaries <code>f</code> and <code>g</code>.</p>
+  <figure class="viz">
+    <svg id="fg-svg" role="img" aria-label="A block enters replicated at f, runs column-parallel then shard-local ops then row-parallel, and exits through g, the single all-reduce"></svg>
+    <figcaption>Forward pass: <code>f</code> is free (identity), <code>g</code> is the all-reduce.
+    In training they swap roles on the backward pass — that's why they're called <i>conjugate</i> operators.</figcaption>
+  </figure>
+  <blockquote class="rule">The art of tensor-parallel model design is <b>choosing the cut so the
+  "local" middle is as long as possible</b>. For attention, the natural cut is staring at us:
+  <b>heads</b>.</blockquote>
+</div>`});
+
+/* ============================== slide 6 · deal the heads ============================== */
+SLIDES.push({t:"Dealing 32 Q + 16 KV heads onto 8 chips",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>05</b> · the cut</p>
+  <h2>Attention is born column-parallel: deal the heads</h2>
+  <p class="lede">Q, K, V projections are column-parallel — and their columns come in
+  <b>head-sized bundles</b>. Dealing whole heads to devices means each head's Q·Kᵀ, softmax and ·V
+  happen entirely on one chip. The catch: <b class="v">GQA</b>. Q heads share KV heads, so the deal
+  must keep each Q head <b>on the same chip as its KV head</b> — and Gemma-4's global layers have
+  only 4 KV heads for 8 chips.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="hd-play">▶ deal</button>
+    <button class="ctl" id="hd-reset">reset</button>
+    <span class="optgrp">layer type:
+      <button data-hd="sliding" class="on">sliding · 16 KV</button>
+      <button data-hd="global">global · 4 KV</button></span>
+    <span class="sp"></span>
+  </div>
+  <figure class="viz">
+    <svg id="hd-svg" role="img" aria-label="32 query heads and their grouped KV heads being dealt onto 8 device lanes; on global layers each KV head is replicated onto two devices"></svg>
+    <figcaption id="hd-cap"></figcaption>
+  </figure>
+  <div class="stepcap" id="hd-note"></div>
+  <p class="src-note">weights.py:58 — kv_idx = (i·q_per_device)·n_kv // n_q · operations.py:58-59 — num_local_kv_heads = 1 if kv_replicated else n_kv//tp</p>
+</div>`});
+
+/* ============================== slide 7 · the corridor ============================== */
+SLIDES.push({t:"The zero-communication corridor",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>06</b> · where it can go through</p>
+  <h2>Everything between the projections is head-local</h2>
+  <p class="lede">Step through one decode of the block, watching a single device's lane.
+  Gemma-4 piles <i>five</i> extra ops between the projections — per-head norms, RoPE, cache update,
+  SDPA, concat — and <b class="g">every one of them operates within a head</b>, so every one of them
+  runs without touching another chip. This corridor is why TP attention scales.</p>
+  <div class="simbar">
+    <button class="ctl primary" id="co-play">▶ play</button>
+    <button class="ctl" id="co-step">step</button>
+    <button class="ctl" id="co-reset">reset</button>
+    <span class="sp"></span>
+  </div>
+  <figure class="viz">
+    <svg id="co-svg" role="img" aria-label="Op pipeline of one attention decode across 8 device lanes: every op between the QKV projection and the output projection stays inside its lane; only the final all-reduce crosses lanes"></svg>
+    <figcaption>8 lanes = 8 devices. A crossing edge means bytes on the wire — there is exactly one.</figcaption>
+  </figure>
+  <div class="stepcap" id="co-cap"><b>Press play</b> — the caption follows each op with its per-device shape.</div>
+  <p class="src-note">op sequence: models/demos/gemma4/tt/attention/decode.py:96-343</p>
+</div>`});
+/* ============================== slide 8 · the one CCL ============================== */
+SLIDES.push({t:"The one CCL — all-reduce after o_proj",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>07</b> · the toll booth</p>
+  <h2>The one CCL: all-reduce after <code style="font-size:.85em">o_proj</code></h2>
+  <p class="lede">Row-parallel <code>o_proj</code> left every device holding a full-shaped
+  <b class="r">partial sum</b> of the block's output [1×5376 per user]. One
+  <code>ttnn.all_reduce</code> adds the 8 partials — after it, every device holds the identical
+  true output, replicated and ready for the residual add. Watch it run as
+  <b class="t">reduce-scatter</b> (each device becomes owner of one true 1/8th) then
+  <b class="v">all-gather</b> (the true pieces are broadcast back).</p>
+  <div class="simbar">
+    <button class="ctl primary" id="ar-play">▶ play</button>
+    <button class="ctl" id="ar-step">step</button>
+    <button class="ctl" id="ar-reset">reset</button>
+    <span class="sp"></span>
+    <span class="optgrp" style="color:var(--muted)">wire traffic: <b class="mono" id="ar-vol" style="color:var(--text)">0 ×</b>&nbsp;shard</span>
+  </div>
+  <figure class="viz">
+    <svg id="ar-svg" role="img" aria-label="All-reduce over 8 devices decomposed into a reduce-scatter phase that accumulates one true shard per device, then an all-gather phase that replicates the true shards everywhere"></svg>
+    <figcaption id="ar-cap">each row = one device's 8 shard-slots · <span class="r">tinted = partial</span> · <span class="g">solid = true sum</span></figcaption>
+  </figure>
+  <div class="stepcap"><b>Cost:</b> 2·(N−1)/N ≈ 1.75× the tensor's bytes over the wire, regardless of N.
+  In the repo: <code>ccl.py:75-91</code> currently calls monolithic <code>ttnn.all_reduce(cluster_axis=tp, topology=Linear)</code>;
+  the decomposed <code>reduce_scatter_minimal_async + all_gather_async</code> path is written but commented out, TODO: sweep.</div>
+</div>`});
+
+/* ============================== slide 9 · sequence parallelism ============================== */
+SLIDES.push({t:"Sequence parallelism — same bytes, sharded residual",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>08</b> · beyond TP</p>
+  <h2>SP: split the all-reduce, shard the boring parts by sequence</h2>
+  <p class="lede">Between blocks, plain TP keeps the residual stream <b>replicated</b> — 8 identical
+  copies of [S×5376], and the RMSNorms redundantly computed 8×. Sequence parallelism notices the
+  all-reduce is already RS + AG, and <b>pulls the two halves apart</b>: reduce-scatter at the block's
+  exit (sharding the stream <i>by sequence</i>), norms on 1/8th of the tokens each,
+  all-gather at the next block's entry. <b class="t">Same wire bytes. 8× less activation memory,
+  8× less norm work.</b> Prefill of a 128k context is where this pays.</p>
+  <div class="simbar">
+    <span class="optgrp">mode:
+      <button data-sp="tp" class="on">plain TP</button>
+      <button data-sp="sp">TP + SP</button></span>
+    <span class="sp"></span>
+  </div>
+  <figure class="viz">
+    <svg id="sp-svg" role="img" aria-label="Comparison of plain tensor parallelism, where the residual stream is replicated on all devices between blocks, and sequence parallelism, where the all-reduce splits into reduce-scatter and all-gather and the stream between blocks is sharded by sequence"></svg>
+    <figcaption id="sp-cap"></figcaption>
+  </figure>
+  <div class="stepcap" id="sp-note"></div>
+</div>`});
+
+/* ============================== slide 10 · the full graph ============================== */
+SLIDES.push({t:"The full graph — where CCLs live",h:`
+<div class="wrap">
+  <p class="eyebrow"><b>09</b> · the map</p>
+  <h2>The whole block as a graph</h2>
+  <p class="lede">Every edge labelled with how its tensor lives on the mesh. CCLs glow amber —
+  they are the <i>only</i> places bytes cross chips. Toggle SP to watch the one all-reduce split
+  in two and slide to the block boundaries.</p>
+  <div class="simbar">
+    <span class="optgrp">mode:
+      <button data-gr="tp" class="on">plain TP</button>
+      <button data-gr="sp">TP + SP</button></span>
+    <span class="sp"></span>
+    <span class="optgrp" style="color:var(--muted)">CCLs in block: <b class="mono" id="gr-count" style="color:var(--amber)">1</b></span>
+  </div>
+  <figure class="viz">
+    <svg id="gr-svg" role="img" aria-label="Dataflow graph of one Gemma-4 attention block annotated with tensor layouts: replicated at the norms, head-sharded through the attention corridor, partial after the output projection, with communication collectives highlighted"></svg>
+    <figcaption id="gr-cap"></figcaption>
+  </figure>
+  <div class="legend">
+    <span><span class="sw" style="background:color-mix(in srgb,var(--teal) 45%,transparent)"></span>head-sharded (free)</span>
+    <span><span class="sw" style="background:color-mix(in srgb,var(--faint) 45%,transparent)"></span>replicated</span>
+    <span><span class="sw" style="background:color-mix(in srgb,var(--red) 45%,transparent)"></span>partial sums</span>
+    <span><span class="sw" style="background:color-mix(in srgb,var(--violet) 45%,transparent)"></span>sequence-sharded</span>
+    <span><span class="sw" style="background:var(--amber)"></span>CCL — bytes on the wire</span>
+  </div>
+  <blockquote class="rule" style="margin-top:22px">Where do we need CCLs? <b>Only where the sharding
+  axis must change.</b> heads→hidden at the block exit (all-reduce), and — under SP — hidden↔sequence
+  at the block boundaries. Everything that keeps its axis flows through for free.</blockquote>
+  <p class="src-note">call sites: decode.py:341 · prefill.py:361, 531 — one apply_allreduce() per attention block, nothing before QKV, nothing inside SDPA</p>
+</div>`});
+
+/* ============================== deck plumbing ============================== */
+const deck=$("deck"),dots=$("dots");
+SLIDES.forEach((s,i)=>{
+  const sec=document.createElement("section");
+  sec.className="slide";sec.innerHTML=s.h;deck.appendChild(sec);
+  const d=document.createElement("button");
+  d.title=s.t;d.onclick=()=>go(i);dots.appendChild(d);
+});
+let cur=0;
+const allTimers=[];
+function stopTimers(){allTimers.forEach(t=>clearInterval(t.id));allTimers.length=0;}
+function every(ms,fn){const id=setInterval(fn,ms);allTimers.push({id});return id;}
+function go(i){
+  cur=Math.max(0,Math.min(SLIDES.length-1,i));
+  document.querySelectorAll(".slide").forEach((el,j)=>el.classList.toggle("active",j===cur));
+  document.querySelectorAll("#dots button").forEach((el,j)=>el.classList.toggle("on",j===cur));
+  $("pgnum").textContent=(cur+1)+"/"+SLIDES.length;
+  $("barTitle").textContent=SLIDES[cur].t;
+  stopTimers();
+}
+$("prevb").onclick=()=>go(cur-1);
+$("nextb").onclick=()=>go(cur+1);
+addEventListener("keydown",e=>{
+  if(e.key==="ArrowRight"||e.key==="PageDown")go(cur+1);
+  else if(e.key==="ArrowLeft"||e.key==="PageUp")go(cur-1);
+});
+go(0);
+/* ============================== svg helpers ============================== */
+function grid(x,y,rows,cols,cs,fills){ /* fills: (r,c)=>css color or null to skip */
+  let s="";
+  for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+    const f=fills(r,c);if(f==null)continue;
+    s+='<rect x="'+(x+c*cs).toFixed(1)+'" y="'+(y+r*cs).toFixed(1)+'" width="'+(cs-1.4)+'" height="'+(cs-1.4)+'" rx="1.5" fill="'+f+'"/>';
+  }
+  return s;
+}
+function tint(col,pct){return "color-mix(in srgb,"+col+" "+pct+"%,transparent)"}
+const NEUT="color-mix(in srgb,var(--faint) 38%,transparent)";
+function lbl(x,y,txt,cls,anch){return '<text x="'+x+'" y="'+y+'" class="'+(cls||"svsm")+'"'+(anch?' text-anchor="'+anch+'"':"")+'>'+txt+"</text>"}
+function opTxt(x,y,t){return '<text x="'+x+'" y="'+y+'" class="svlbl" text-anchor="middle" font-size="15">'+t+"</text>"}
+function arrow(x1,y1,x2,y2,col,dash){
+  return '<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="'+col+'" stroke-width="1.8"'+(dash?' stroke-dasharray="4 4"':"")+' marker-end="url(#arh)"/>';
+}
+const DEFS='<defs><marker id="arh" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L8 4L0 8z" fill="context-stroke"/></marker></defs>';
+
+/* generic stepper wiring */
+function stepper(pre,maxStep,render,speed){
+  const st={s:0};
+  const upd=()=>render(st.s);
+  $(pre+"-step").onclick=()=>{st.s=Math.min(maxStep,st.s+1);upd();};
+  $(pre+"-reset").onclick=()=>{st.s=0;upd();};
+  $(pre+"-play").onclick=()=>{
+    st.s=0;upd();
+    const id=every(speed||900,()=>{
+      st.s++;if(st.s>=maxStep){st.s=maxStep;clearInterval(id);}
+      upd();
+    });
+  };
+  upd();
+  return st;
+}
+
+/* ============================== slide 3 · column-parallel sim ============================== */
+let cpN=4;
+function cpRender(step){
+  const n=cpN,cs=13,W=1160,strip=16/n; /* W has 16 cols; strip=cols per device */
+  let o=DEFS;
+  /* logical equation */
+  const lx=40,ly=42;
+  o+=lbl(lx,ly-12,"logical view — Y = X · W","axt2");
+  o+=grid(lx,ly,4,6,cs,()=>NEUT)+lbl(lx+3*cs,ly+4*cs+16,"X  [S×H]","svsm","middle");
+  o+=opTxt(lx+6*cs+22,ly+2*cs+5,"×");
+  const wx=lx+6*cs+44;
+  o+=grid(wx,ly,6,16,cs,(r,c)=>step>=1?tint(DEV[Math.floor(c/strip)],55):NEUT);
+  o+=lbl(wx+8*cs,ly+6*cs+16,step>=1?"W split by columns → W₀ … W"+(n-1):"W  [H×H']","svsm","middle");
+  o+=opTxt(wx+16*cs+22,ly+2*cs+5,"=");
+  const yx=wx+16*cs+44;
+  o+=grid(yx,ly,4,16,cs,(r,c)=>step>=3?tint(DEV[Math.floor(c/strip)],85):tint("var(--faint)",14));
+  o+=lbl(yx+8*cs,ly+4*cs+16,step>=3?"Y — never materialized on one chip":"Y  [S×H']","svsm","middle");
+  if(step>=1)for(let d=1;d<n;d++)
+    o+='<line x1="'+(wx+d*strip*cs-0.7)+'" y1="'+(ly-4)+'" x2="'+(wx+d*strip*cs-0.7)+'" y2="'+(ly+6*cs+2)+'" stroke="var(--bg)" stroke-width="2.6"/>';
+  /* device panels */
+  const perRow=Math.min(n,4),rows=Math.ceil(n/perRow),pw=252,ph=118,py0=178;
+  if(step>=2)for(let d=0;d<n;d++){
+    const px=40+(d%perRow)*(pw+34),py=py0+Math.floor(d/perRow)*(ph+22),c2=8;
+    o+='<rect x="'+(px-12)+'" y="'+(py-30)+'" width="'+(pw+12)+'" height="'+(ph+18)+'" rx="9" fill="var(--panel2)" stroke="'+(step>=3?DEV[d]:"var(--line)")+'" stroke-width="1.4"/>';
+    o+=lbl(px-2,py-12,"device "+d,"svsm");
+    o+=grid(px,py,4,6,c2,()=>NEUT)+lbl(px+3*c2,py+4*c2+14,"X (copy)","svsm","middle");
+    o+=opTxt(px+6*c2+16,py+2*c2+4,"×");
+    const wpx=px+6*c2+32;
+    o+=grid(wpx,py,6,strip,c2,()=>tint(DEV[d],55));
+    o+=lbl(wpx+strip*c2/2,py+6*c2+14,"W"+d,"svsm","middle");
+    o+=opTxt(wpx+strip*c2+16,py+2*c2+4,"=");
+    const ypx=wpx+strip*c2+32;
+    o+=grid(ypx,py,4,strip,c2,()=>step>=3?tint(DEV[d],85):tint("var(--faint)",14));
+    o+=lbl(ypx+strip*c2/2,py+4*c2+14,"Y"+d,"svsm","middle");
+  }
+  if(step>=4){
+    const bx=Math.min(40+perRow*(pw+34)-22,1130);
+    o+='<text x="'+bx+'" y="'+(py0+40)+'" text-anchor="end" class="svlbl" fill="var(--green)" font-weight="700" font-size="15">0 bytes crossed a chip ✓</text>';
+  }
+  const H=step>=2?py0+rows*(ph+22)+6:150;
+  const svg=$("cp-svg");svg.setAttribute("viewBox","0 0 "+W+" "+H);svg.innerHTML=o;
+  const caps=["The dense linear we start from.",
+    "<b>Cut W into "+n+" column strips.</b> Each strip is a full-height, narrow matrix.",
+    "<b>Replicate X.</b> Every device already has it — the block's input was replicated.",
+    "<b>Each device multiplies its strip.</b> Yᵢ = X·Wᵢ — a real, complete slice of Y.",
+    "<b class='g'>Done — zero communication.</b> Y lives sharded, and the next op can consume slices."];
+  $("cp-cap").innerHTML=caps[Math.min(step,4)];
+}
+const cpSt=stepper("cp",4,cpRender,950);
+document.querySelectorAll("button[data-cpn]").forEach(b=>{
+  b.onclick=()=>{cpN=+b.dataset.cpn;
+    document.querySelectorAll("button[data-cpn]").forEach(x=>x.classList.toggle("on",x===b));
+    cpSt.s=0;cpRender(0);};
+});
+
+/* ============================== slide 4 · row-parallel sim ============================== */
+let rpN=4;
+function rpRender(step){
+  const n=rpN,cs=13,strip=16/n;
+  let o=DEFS;
+  const lx=40,ly=42;
+  o+=lbl(lx,ly-12,"logical view — Y = X · W, but X arrives sharded","axt2");
+  o+=grid(lx,ly,4,16,cs,(r,c)=>step>=1?tint(DEV[Math.floor(c/strip)],55):NEUT);
+  o+=lbl(lx+8*cs,ly+4*cs+16,step>=1?"X sharded by columns (from move #1)":"X  [S×H']","svsm","middle");
+  o+=opTxt(lx+16*cs+22,ly+2*cs+5,"×");
+  const wx=lx+16*cs+44;
+  o+=grid(wx,ly,16,6,7.2,(r,c)=>step>=2?tint(DEV[Math.floor(r/(16/n))],55):NEUT);
+  o+=lbl(wx+3*7.2,ly+16*7.2+14,step>=2?"W split by rows":"W  [H'×H]","svsm","middle");
+  o+=opTxt(wx+6*7.2+22,ly+2*cs+5,"=");
+  const yx=wx+6*7.2+44;
+  const yfill=step>=5?(r,c)=>tint("var(--green)",80):(step>=3?(r,c)=>tint("var(--red)",30):()=>tint("var(--faint)",14));
+  o+=grid(yx,ly,4,6,cs,yfill);
+  o+=lbl(yx+3*cs,ly+4*cs+16,step>=5?"true Y — after all-reduce ✓":(step>=3?"⚠ every device: full shape, wrong values":"Y  [S×H]"),"svsm","middle");
+  /* device panels */
+  const perRow=Math.min(n,4),rows=Math.ceil(n/perRow),pw=252,ph=126,py0=196;
+  if(step>=3)for(let d=0;d<n;d++){
+    const px=40+(d%perRow)*(pw+34),py=py0+Math.floor(d/perRow)*(ph+22),c2=8;
+    o+='<rect x="'+(px-12)+'" y="'+(py-30)+'" width="'+(pw+12)+'" height="'+(ph+14)+'" rx="9" fill="var(--panel2)" stroke="'+DEV[d]+'" stroke-width="1.4"/>';
+    o+=lbl(px-2,py-12,"device "+d,"svsm");
+    o+=grid(px,py,4,strip,c2,()=>tint(DEV[d],55))+lbl(px+strip*c2/2,py+4*c2+14,"X"+d,"svsm","middle");
+    o+=opTxt(px+strip*c2+14,py+2*c2+4,"×");
+    const wpx=px+strip*c2+28;
+    o+=grid(wpx,py,strip,6,c2,()=>tint(DEV[d],55))+lbl(wpx+3*c2,py+Math.max(strip,4)*c2+14,"W"+d,"svsm","middle");
+    o+=opTxt(wpx+6*c2+14,py+2*c2+4,"=");
+    const ypx=wpx+6*c2+28;
+    o+=grid(ypx,py,4,6,c2,()=>step>=5?tint("var(--green)",80):tint("var(--red)",30));
+    o+=lbl(ypx+3*c2,py+4*c2+14,step>=5?"Y ✓":"partial "+d,"svsm","middle");
+    if(step===4)o+='<text x="'+(ypx+3*c2)+'" y="'+(py-38)+'" text-anchor="middle" class="svsm" fill="var(--red)">Σ missing</text>';
+  }
+  if(step>=4&&step<5){
+    o+='<text x="580" y="'+(py0+rows*(ph+22)+18)+'" text-anchor="middle" class="svlbl" fill="var(--red)" font-size="14">Y = X₀W₀ + X₁W₁ + … — the pieces must be ADDED, not concatenated</text>';
+  }
+  if(step>=5){
+    o+='<rect x="330" y="'+(py0+rows*(ph+22))+'" width="500" height="30" rx="8" fill="color-mix(in srgb,var(--amber) 18%,transparent)" stroke="var(--amber)"/>';
+    o+='<text x="580" y="'+(py0+rows*(ph+22)+20)+'" text-anchor="middle" class="svlbl" fill="var(--amber)" font-weight="700">all-reduce — the CCL this deck is about</text>';
+  }
+  const H=step>=3?py0+rows*(ph+22)+42:180;
+  const svg=$("rp-svg");svg.setAttribute("viewBox","0 0 1160 "+H);svg.innerHTML=o;
+  const caps=["Same linear — but this time the input is what move #1 left behind.",
+    "<b>X arrives column-sharded.</b> Device d holds only strip Xd. Gathering it would cost a CCL — don't.",
+    "<b>Cut W by rows</b> so Xd's columns meet exactly Wd's rows: the shapes line up per device.",
+    "<b>Multiply locally.</b> Each XdWd is full-shaped [S×H]… but only one term of the sum.",
+    "<b class='r'>The trap:</b> "+n+" full-shaped tensors, all wrong. Concatenating was free in move #1; here the pieces overlap and must be summed.",
+    "<b class='a'>all-reduce</b> sums all "+n+" partials and leaves the true Y replicated on every device. One CCL — at the very end."];
+  $("rp-cap").innerHTML=caps[Math.min(step,5)];
+}
+const rpSt=stepper("rp",5,rpRender,1000);
+document.querySelectorAll("button[data-rpn]").forEach(b=>{
+  b.onclick=()=>{rpN=+b.dataset.rpn;
+    document.querySelectorAll("button[data-rpn]").forEach(x=>x.classList.toggle("on",x===b));
+    rpSt.s=0;rpRender(0);};
+});
+
+/* ============================== slide 5 · f/g diagram (static) ============================== */
+(function(){
+  let o=DEFS;
+  const y=86,bh=64;
+  function node(x,w,txt,sub,col){
+    return '<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+bh+'" rx="9" fill="var(--panel2)" stroke="'+col+'" stroke-width="1.5"/>'
+      +'<text x="'+(x+w/2)+'" y="'+(y+26)+'" text-anchor="middle" class="svlbl" font-weight="700">'+txt+'</text>'
+      +'<text x="'+(x+w/2)+'" y="'+(y+45)+'" text-anchor="middle" class="svsm">'+sub+'</text>';
+  }
+  o+=lbl(30,y-38,"one transformer sub-block, Megatron-style","axt2");
+  o+=node(30,80,"X","replicated","var(--faint)");
+  o+=arrow(110,y+bh/2,158,y+bh/2,"currentColor");
+  o+='<circle cx="182" cy="'+(y+bh/2)+'" r="22" fill="var(--panel2)" stroke="var(--teal)" stroke-width="1.6"/>'
+    +'<text x="182" y="'+(y+bh/2+5)+'" text-anchor="middle" class="svlbl" fill="var(--teal)" font-weight="700">f</text>'
+    +lbl(182,y-16,"fwd: identity — free","svsm","middle")
+    +lbl(182,y+bh+26,"bwd: all-reduce","svsm","middle");
+  o+=arrow(204,y+bh/2,246,y+bh/2,"currentColor");
+  o+=node(246,190,"column-parallel","wqkv — output sharded","var(--teal)");
+  o+=arrow(436,y+bh/2,478,y+bh/2,"var(--teal)");
+  o+=node(478,268,"shard-local ops","norms · RoPE · SDPA · concat","var(--green)");
+  o+=lbl(612,y+bh+26,"the zero-comm corridor (slide 7)","svsm","middle");
+  o+=arrow(746,y+bh/2,788,y+bh/2,"var(--teal)");
+  o+=node(788,180,"row-parallel","o_proj — output partial","var(--red)");
+  o+=arrow(968,y+bh/2,1010,y+bh/2,"var(--red)");
+  o+='<circle cx="1034" cy="'+(y+bh/2)+'" r="22" fill="color-mix(in srgb,var(--amber) 22%,var(--panel2))" stroke="var(--amber)" stroke-width="2.2"/>'
+    +'<text x="1034" y="'+(y+bh/2+5)+'" text-anchor="middle" class="svlbl" fill="var(--amber)" font-weight="700">g</text>'
+    +lbl(1034,y-16,"fwd: ALL-REDUCE","svsm","middle")
+    +lbl(1034,y+bh+26,"bwd: identity","svsm","middle");
+  o+=arrow(1056,y+bh/2,1098,y+bh/2,"currentColor");
+  o+=node(1098,80,"Y","replicated","var(--faint)");
+  /* edge layout annotations */
+  o+=lbl(225,y+bh/2-10,"repl.","svsm","middle");
+  o+=lbl(457,y+bh/2-10,"sharded","svsm","middle");
+  o+=lbl(767,y+bh/2-10,"sharded","svsm","middle");
+  o+=lbl(989,y+bh/2-12,"partial","svsm","middle");
+  const svg=$("fg-svg");svg.setAttribute("viewBox","0 0 1210 246");svg.innerHTML=o;
+})();
+/* ============================== slide 6 · deal the heads ============================== */
+let hdMode="sliding",hdStep=0; /* step = devices dealt, 0..8 */
+function hdRender(){
+  const global=hdMode==="global",nkv=global?4:16,qcs=25,kcs=global?34:25;
+  let o=DEFS;
+  /* Q pool */
+  o+=lbl(40,22,"Q heads 0–31 · d_h="+(global?512:256),"axt2");
+  o+=grid(40,30,1,32,qcs,(r,c)=>{
+    const dev=Math.floor(c/4);
+    return dev<hdStep?tint(DEV[dev],80):NEUT;
+  });
+  /* KV pool */
+  o+=lbl(40,96,"KV heads · "+nkv+" of them"+(global?" · K=V tied":""),"axt2");
+  for(let j=0;j<nkv;j++){
+    const cx=global?40+(8*j+4)*qcs-kcs/2:40+2*j*qcs+ (qcs-1.4)/2*0;
+    const devs=global?[2*j,2*j+1]:[Math.floor(j/2)];
+    const dealt=devs.some(d=>d<hdStep);
+    const col=dealt?tint(DEV[devs[0]],80):NEUT;
+    o+='<rect x="'+cx+'" y="104" width="'+(kcs-1.4)+'" height="'+(kcs-1.4)+'" rx="2" fill="'+col+'"'+(global?' stroke="var(--violet)" stroke-width="1.4"':"")+'/>';
+    if(global)o+=lbl(cx+kcs/2-1,104+kcs+13,"kv"+j,"svsm","middle");
+  }
+  if(global)o+=lbl(1130,120,"1 KV head : 8 Q heads : 2 devices","svsm","end");
+  else o+=lbl(1130,120,"1 KV head : 2 Q heads : same device","svsm","end");
+  /* device boxes */
+  const by=196,bw=128,bh=158;
+  for(let d=0;d<8;d++){
+    const bx=40+d*140,on=d<hdStep;
+    o+='<rect x="'+bx+'" y="'+by+'" width="'+bw+'" height="'+bh+'" rx="9" fill="var(--panel2)" stroke="'+(on?DEV[d]:"var(--line)")+'" stroke-width="'+(on?1.8:1)+'"/>';
+    o+='<text x="'+(bx+10)+'" y="'+(by+22)+'" class="svsm" fill="'+(on?DEV[d]:"var(--faint)")+'" font-weight="700">device '+d+'</text>';
+    if(on){
+      o+=grid(bx+10,by+34,1,4,26,()=>tint(DEV[d],80));
+      o+=lbl(bx+10,by+78,"q"+(4*d)+"–q"+(4*d+3),"svsm");
+      if(global){
+        const kv=d>>1,rep=d%2===1;
+        o+='<rect x="'+(bx+10)+'" y="'+(by+90)+'" width="30" height="24" rx="2" fill="'+tint(DEV[d],80)+'" stroke="var(--violet)" stroke-width="1.4"'+(rep?' stroke-dasharray="3 3"':"")+'/>';
+        o+=lbl(bx+48,by+107,"kv"+kv+(rep?" (copy)":""),"svsm");
+        o+=lbl(bx+10,by+140,"= 4·512 + 512 cols","svsm");
+      }else{
+        o+=grid(bx+10,by+90,1,2,26,()=>tint(DEV[d],80));
+        o+=lbl(bx+66,by+107,"kv"+(2*d)+",kv"+(2*d+1),"svsm");
+        o+=lbl(bx+10,by+140,"= 4·256+2·256+2·256","svsm");
+      }
+    }
+    /* arrow for freshly dealt device */
+    if(on&&d===hdStep-1){
+      const qx=40+(4*d+2)*qcs;
+      o+=arrow(qx,58,bx+bw/2,by-6,DEV[d]);
+    }
+  }
+  const svg=$("hd-svg");svg.setAttribute("viewBox","0 0 1160 372");svg.innerHTML=o;
+  $("hd-cap").innerHTML=global
+    ?"global layer · 32 Q ÷ 8 = 4 per device · <b class='v'>4 KV &lt; 8 devices → each KV head is REPLICATED onto its 2 devices</b>"
+    :"sliding layer · 32 Q ÷ 8 = 4 per device · 16 KV ÷ 8 = 2 per device — a clean deal, GQA groups intact";
+  $("hd-note").innerHTML=global
+    ?"<b>kv_replicated:</b> when num_kv_heads &lt; TP the code gives every device exactly the ONE KV head its Q heads point at — kv_idx = (i·q_per_device)·n_kv // n_q, so devices 0,1→kv0 · 2,3→kv1 · 4,5→kv2 · 6,7→kv3. A copy costs a little memory (here just 512 columns of wqkv) and buys <b class='g'>zero attention-time communication</b>. The alternative — remote KV reads during SDPA — would put a CCL inside the hot loop."
+    :"<b>The deal defines the wqkv strip.</b> Device d's slice of the fused 5376×16384 wqkv is [4 Q | 2 K | 2 V] head-bundles = 2048 columns. Column-parallel from slide 3, just with head-aligned strips — <code>mesh_config.column_parallel</code> in weights.py.";
+}
+$("hd-play").onclick=()=>{
+  hdStep=0;hdRender();
+  const id=every(480,()=>{hdStep++;if(hdStep>=8){hdStep=8;clearInterval(id);}hdRender();});
+};
+$("hd-reset").onclick=()=>{hdStep=0;hdRender();};
+document.querySelectorAll("button[data-hd]").forEach(b=>{
+  b.onclick=()=>{hdMode=b.dataset.hd;hdStep=0;
+    document.querySelectorAll("button[data-hd]").forEach(x=>x.classList.toggle("on",x===b));hdRender();};
+});
+hdRender();
+
+/* ============================== slide 7 · corridor pipeline ============================== */
+const CO_OPS=[
+  {n:"x",cap:"<b>Input arrives replicated.</b> Every device holds the same [1, batch, 5376] activation — the previous block's all-reduce (and the pre-attention RMSNorm, computed redundantly on all 8) left it that way."},
+  {n:"wqkv",cap:"<b>ttnn.linear(wqkv)</b> — column-parallel. Per device: [batch, 2048] = its 4 Q + 2 K + 2 V head-bundles. <b class='g'>local</b>"},
+  {n:"heads",cap:"<b>nlp_create_qkv_heads_decode</b> — reshape the strip into per-head tensors Q[4,·,256], K[2,·,256], V[2,·,256]. Pure data movement inside L1. <b class='g'>local</b>"},
+  {n:"norms",cap:"<b>per-head RMSNorm</b> — learned on Q and K, unweighted on V (Gemma-4's oddity). Normalizes over head_dim=256, so it never looks outside a head. Norm weights are tiny and simply replicated. <b class='g'>local</b>"},
+  {n:"RoPE",cap:"<b>rotary embedding</b> — rotates pairs within head_dim. Positions are the same on every device; no head talks to another. <b class='g'>local</b>"},
+  {n:"KV$",cap:"<b>paged_update_cache</b> — appends this token's K,V into the device-local slice of the paged cache (sliding layers: a 1024-slot ring). The cache is born sharded because the heads are. <b class='g'>local</b>"},
+  {n:"SDPA",cap:"<b>paged SDPA</b> — scale=1.0, sliding_window=1024. softmax(QKᵀ)·V per head: reductions run over the sequence axis and head_dim, both fully local. The expensive op — and it needs nothing from any other chip. <b class='g'>local</b>"},
+  {n:"concat",cap:"<b>concat_heads</b> — the 4 local heads → [batch, 1024]: exactly the strip shape row-parallel o_proj wants. <b class='g'>local</b>"},
+  {n:"o_proj",cap:"<b>ttnn.linear(o_proj)</b> — row-parallel. Output [batch, 5376]: full-shaped but a <b class='r'>partial sum</b>. Still no communication — the debt is booked, not yet paid."},
+  {n:"AR",cap:"<b class='a'>ttnn.all_reduce</b> — the single CCL. 8 partials become the true output, replicated for the residual add. decode.py:341 — the only line in this block where bytes cross chips."}
+];
+function coRender(step){
+  const x0=110,sw=92,gap=14,laneH=36,y0=46;
+  let o=DEFS;
+  for(let d=0;d<8;d++){
+    const y=y0+d*laneH;
+    o+='<rect x="14" y="'+(y+4)+'" width="10" height="18" rx="2" fill="'+DEV[d]+'"/>';
+    o+=lbl(30,y+18,"dev "+d,"svsm");
+  }
+  for(let s=0;s<CO_OPS.length;s++){
+    const x=x0+s*(sw+gap),curr=s===step,done=s<step;
+    o+='<text x="'+(x+sw/2-(s===9?6:0))+'" y="'+(y0-14)+'" text-anchor="middle" class="'+(curr?"axt2":"axt")+'">'+CO_OPS[s].n+"</text>";
+    if(s===9){ /* all-reduce: one capsule spanning all lanes */
+      const y=y0,h=8*laneH-10;
+      o+='<rect x="'+x+'" y="'+y+'" width="'+(sw-18)+'" height="'+h+'" rx="10" fill="'+(step>=9?"color-mix(in srgb,var(--amber) 26%,var(--panel2))":"var(--panel2)")+'" stroke="var(--amber)" stroke-width="'+(curr?2.4:1.2)+'"'+(step<9?' stroke-dasharray="4 4"':"")+'/>';
+      if(step>=9){ /* crossing traffic inside the capsule */
+        for(let d=0;d<7;d++){
+          const ya=y0+d*laneH+13,yb=y0+(d+1)*laneH+13;
+          o+='<line x1="'+(x+16)+'" y1="'+ya+'" x2="'+(x+sw-34)+'" y2="'+yb+'" stroke="var(--amber)" stroke-width="1.5" marker-end="url(#arh)"/>'
+            +'<line x1="'+(x+sw-34)+'" y1="'+ya+'" x2="'+(x+16)+'" y2="'+yb+'" stroke="var(--amber)" stroke-width="1.5" opacity=".55" marker-end="url(#arh)"/>';
+        }
+      }
+      o+='<text x="'+(x+(sw-18)/2)+'" y="'+(y+h+22)+'" text-anchor="middle" class="svsm" fill="var(--amber)">crosses lanes</text>';
+      continue;
+    }
+    for(let d=0;d<8;d++){
+      const y=y0+d*laneH;
+      const base=s===0?NEUT:(s===8?tint("var(--red)",done||curr?34:14):tint(DEV[d],done||curr?(curr?85:60):16));
+      o+='<rect x="'+x+'" y="'+y+'" width="'+(sw-18)+'" height="26" rx="6" fill="'+base+'"'+(curr?' stroke="var(--text)" stroke-width="1.4"':"")+'/>';
+      if(s<9)o+=arrow(x+sw-16,y+13,x+sw+gap-4,y+13,done?"var(--teal)":"var(--line)");
+    }
+  }
+  /* "no crossing" guard rails between lanes up to o_proj */
+  o+='<text x="'+(x0+4*(sw+gap))+'" y="'+(y0+8*laneH+16)+'" text-anchor="middle" class="svsm" fill="var(--green)">'+(step<9?"◦ no edge has crossed a lane yet":"◦ lanes stayed sealed until here —")+"</text>";
+  const svg=$("co-svg");svg.setAttribute("viewBox","0 0 1180 "+(y0+8*laneH+30));svg.innerHTML=o;
+  $("co-cap").innerHTML="<b>"+(step+1)+"/10 · "+CO_OPS[step].n+"</b> — "+CO_OPS[step].cap;
+}
+stepper("co",9,coRender,1500);
+/* ============================== slide 8 · all-reduce = RS + AG ============================== */
+function arSim(steps){ /* recompute state after `steps` ring steps (0..14) */
+  const acc=Array.from({length:8},()=>Array(8).fill(1));
+  const comp=Array.from({length:8},()=>Array(8).fill(false));
+  const moves=[]; /* arrows of the step just applied */
+  for(let s=1;s<=Math.min(steps,7);s++){ /* reduce-scatter ring */
+    const prev=acc.map(r=>r.slice());moves.length=0;
+    for(let i=0;i<8;i++){
+      const j=(i-s+1+16)%8,r=(i+1)%8;
+      acc[r][j]=prev[r][j]+prev[i][j];
+      if(s===steps)moves.push([i,r,j]);
+    }
+  }
+  for(let i=0;i<8;i++)for(let j=0;j<8;j++)comp[i][j]=acc[i][j]>=8;
+  for(let s=8;s<=Math.min(steps,14);s++){ /* all-gather ring */
+    const prev=comp.map(r=>r.slice());moves.length=0;
+    for(let i=0;i<8;i++)for(let j=0;j<8;j++)
+      if(prev[i][j]&&!prev[(i+1)%8][j]){comp[(i+1)%8][j]=true;if(s===steps)moves.push([i,(i+1)%8,j]);}
+  }
+  return {acc,comp,moves};
+}
+function arRender(step){
+  const {acc,comp,moves}=arSim(step);
+  const x0=120,y0=64,cw=58,rh=42;
+  let o=DEFS;
+  const phase=step===0?"start":(step<=7?"reduce-scatter · step "+step+"/7":(step<14?"all-gather · step "+(step-7)+"/7":"done"));
+  o+='<text x="'+(x0+4*cw)+'" y="26" text-anchor="middle" class="axt2" font-size="13">'+phase+"</text>";
+  for(let j=0;j<8;j++)o+=lbl(x0+j*cw+cw/2-1,y0-12,"s"+j,"svsm","middle");
+  for(let i=0;i<8;i++){
+    const y=y0+i*rh;
+    o+='<rect x="'+(x0-92)+'" y="'+(y+6)+'" width="10" height="18" rx="2" fill="'+DEV[i]+'"/>'+lbl(x0-76,y+20,"dev "+i,"svsm");
+    for(let j=0;j<8;j++){
+      const x=x0+j*cw,c=comp[i][j],a=acc[i][j];
+      const fill=c?tint("var(--green)",82):tint(DEV[i],14+a*7);
+      o+='<rect x="'+x+'" y="'+y+'" width="'+(cw-6)+'" height="'+(rh-10)+'" rx="5" fill="'+fill+'"'+(c?' stroke="var(--green)" stroke-width="1.2"':"")+'/>';
+      o+='<text x="'+(x+(cw-6)/2)+'" y="'+(y+rh/2+1)+'" text-anchor="middle" class="svsm" fill="'+(c?"var(--bg)":"var(--muted)")+'" font-weight="700">'+(c?"Σ":a)+"</text>";
+    }
+  }
+  moves.forEach(([i,r,j])=>{
+    const x=x0+j*cw+(cw-6)/2,y1=y0+i*rh+(r===(i+1)%8&&r>i?rh-10:16),y2=y0+r*rh+(r>i?2:rh-12);
+    if(r===0&&i===7){ /* wrap-around: draw curved side arrow */
+      o+='<path d="M '+(x0+8*cw+6)+' '+(y0+7*rh+16)+' C '+(x0+8*cw+52)+' '+(y0+7*rh+16)+' '+(x0+8*cw+52)+' '+(y0+16)+' '+(x0+8*cw+10)+' '+(y0+16)+'" fill="none" stroke="var(--amber)" stroke-width="1.6" marker-end="url(#arh)"/>';
+    }else{
+      o+='<line x1="'+x+'" y1="'+y1+'" x2="'+x+'" y2="'+y2+'" stroke="var(--amber)" stroke-width="2" marker-end="url(#arh)"/>';
+    }
+  });
+  o+=lbl(x0+8*cw+16,y0+10,"ring","svsm");
+  const svg=$("ar-svg");svg.setAttribute("viewBox","0 0 "+(x0+8*cw+70)+" "+(y0+8*rh+12));svg.innerHTML=o;
+  $("ar-vol").textContent=(step/8).toFixed(2)+" ×";
+  $("ar-cap").innerHTML=step===0
+    ?"each row = one device's 8 shard-slots · every slot holds a <span class='r'>partial</span> (count = how many devices' contributions it has)"
+    :step<=7?"<b class='t'>reduce-scatter:</b> each device forwards one slot to its ring neighbour, adding as it goes — counts climb until one device owns each slot's full Σ"
+    :step<14?"<b class='v'>all-gather:</b> the finished Σ-shards ride the same ring back around until every device has all 8"
+    :"<b class='g'>done:</b> all 8 devices hold the identical true tensor — 14 ring steps, 1.75× the tensor over the wire";
+}
+stepper("ar",14,arRender,650);
+
+/* ============================== slide 9 · sequence parallelism ============================== */
+let spMode="tp";
+function spRender(){
+  const sp=spMode==="sp",y0=56,rh=34;
+  let o=DEFS;
+  function region(x,w,t,sub){
+    o+='<rect x="'+x+'" y="'+(y0-26)+'" width="'+w+'" height="'+(8*rh+38)+'" rx="10" fill="var(--panel2)" stroke="var(--line)"/>'
+      +'<text x="'+(x+w/2)+'" y="'+(y0-8)+'" text-anchor="middle" class="svsm" font-weight="700">'+t+"</text>"
+      +(sub?'<text x="'+(x+w/2)+'" y="'+(y0+8*rh+26)+'" text-anchor="middle" class="svsm">'+sub+"</text>":"");
+  }
+  function ccl(x,t,col){
+    o+='<rect x="'+x+'" y="'+(y0-14)+'" width="64" height="'+(8*rh+14)+'" rx="10" fill="color-mix(in srgb,'+col+' 20%,var(--panel2))" stroke="'+col+'" stroke-width="1.8"/>';
+    o+='<text x="'+(x+32)+'" y="'+(y0+4*rh)+'" text-anchor="middle" class="svsm" fill="'+col+'" font-weight="700" transform="rotate(-90 '+(x+32)+' '+(y0+4*rh)+')">'+t+"</text>";
+  }
+  for(let d=0;d<8;d++){
+    const y=y0+d*rh;
+    o+='<rect x="10" y="'+(y+2)+'" width="10" height="16" rx="2" fill="'+DEV[d]+'"/>'+lbl(26,y+15,"d"+d,"svsm");
+  }
+  region(64,180,"attention block N","TP corridor · head-sharded");
+  ccl(258,sp?"reduce-scatter":"all-reduce",sp?"var(--teal)":"var(--amber)");
+  /* between-blocks region: the residual stream + norm */
+  const bx=340,bw=460;
+  region(bx,bw,"between blocks — residual add · RMSNorm ·  (MLP would sit here too)",
+    sp?"stream lives sequence-sharded: 1× total · norm on S/8 tokens per device":"stream replicated: 8 identical copies · norm computed 8× redundantly");
+  for(let d=0;d<8;d++){
+    const y=y0+d*rh;
+    if(sp){
+      const segw=(bw-40)/8;
+      o+='<rect x="'+(bx+20+d*segw)+'" y="'+(y+2)+'" width="'+(segw-4)+'" height="16" rx="3" fill="'+tint("var(--violet)",70)+'"/>';
+      o+=lbl(bx+20+d*segw+segw/2-2,y+14,"t"+d,"svsm","middle");
+    }else{
+      o+='<rect x="'+(bx+20)+'" y="'+(y+2)+'" width="'+(bw-40)+'" height="16" rx="3" fill="'+NEUT+'"/>';
+      o+=lbl(bx+bw/2,y+14,"full copy of [S×5376]","svsm","middle");
+    }
+  }
+  if(sp)ccl(bx+bw+14,"all-gather","var(--violet)");
+  region(sp?bx+bw+92:bx+bw+14,180,"attention block N+1","TP corridor again");
+  const endx=(sp?bx+bw+92:bx+bw+14)+180;
+  /* memory bars */
+  const my=y0+8*rh+56;
+  o+=lbl(64,my,"activation memory held between blocks:","axt2");
+  o+='<rect x="360" y="'+(my-12)+'" width="'+(sp?40:320)+'" height="14" rx="3" fill="'+(sp?tint("var(--violet)",75):NEUT)+'"/>';
+  o+=lbl(sp?408:688,my,sp?"S×5376 — ÷8":"8 × S×5376","svsm");
+  const svg=$("sp-svg");svg.setAttribute("viewBox","0 0 "+Math.max(endx+20,1080)+" "+(my+22));svg.innerHTML=o;
+  $("sp-cap").innerHTML=sp
+    ?"TP + SP: the all-reduce is split — <b class='t'>RS</b> at the exit, <b class='v'>AG</b> at the next entry. Wire bytes: RS (0.875×) + AG (0.875×) = <b>the same 1.75×</b>."
+    :"plain TP (what gemma4 runs today): the all-reduce re-replicates the stream, and everything between blocks is done 8× over.";
+  $("sp-note").innerHTML=sp
+    ?"<b>Why this is free bandwidth-wise:</b> slide 8 showed all-reduce IS reduce-scatter + all-gather back-to-back. SP just refuses to do the gather until the moment something (the QKV matmul) genuinely needs full hidden width — and parks the norms, residual adds and dropout in the sharded gap. For a 128k-token prefill on Gemma-4 that's 128k×5376×2B ≈ <b>1.4 GB per copy</b> you stop holding 8×. The repo's building blocks already exist: <code>MeshConfig.allreduce</code> is implemented as RS+AG (<code>config.py</code>), and <code>ccl.py</code> carries the commented-out decomposed path with a TODO."
+    :"<b>The cost nobody bills:</b> replication means device 0's RMSNorm result equals device 7's, computed twice… ×8. Harmless for one decode token; real money for long prefill. Flip the toggle.";
+}
+document.querySelectorAll("button[data-sp]").forEach(b=>{
+  b.onclick=()=>{spMode=b.dataset.sp;
+    document.querySelectorAll("button[data-sp]").forEach(x=>x.classList.toggle("on",x===b));spRender();};
+});
+spRender();
+
+/* ============================== slide 10 · full graph ============================== */
+let grMode="tp";
+function grRender(){
+  const sp=grMode==="sp",y=96,bh=58;
+  let o=DEFS;
+  const REPL="var(--faint)",HEAD="var(--teal)",PART="var(--red)",SEQ="var(--violet)";
+  function node(x,w,txt,sub,col,glow){
+    o+='<rect x="'+x+'" y="'+y+'" width="'+w+'" height="'+bh+'" rx="9" fill="'+(glow?"color-mix(in srgb,var(--amber) 22%,var(--panel2))":"var(--panel2)")+'" stroke="'+col+'" stroke-width="'+(glow?2.2:1.4)+'"/>'
+      +'<text x="'+(x+w/2)+'" y="'+(y+24)+'" text-anchor="middle" class="svlbl" font-size="12.5" font-weight="700">'+txt+'</text>'
+      +'<text x="'+(x+w/2)+'" y="'+(y+42)+'" text-anchor="middle" class="svsm">'+sub+'</text>';
+    return x+w;
+  }
+  function edge(x1,x2,col,t){
+    o+=arrow(x1,y+bh/2,x2,y+bh/2,col);
+    if(t)o+='<text x="'+((x1+x2)/2)+'" y="'+(y+bh/2+(t.length>8?26:-10))+'" text-anchor="middle" class="svsm" fill="'+col+'">'+t+"</text>";
+  }
+  let x=16,e;
+  e=node(x,64,"x","stream",sp?SEQ:REPL);x=e;
+  edge(x,x+34,sp?SEQ:REPL,sp?"seq ⅛":"repl");x+=34;
+  e=node(x,106,"pre-norm","RMSNorm"+(sp?" · S/8":" · ×8"),sp?SEQ:REPL);x=e;
+  if(sp){edge(x,x+34,SEQ,"seq ⅛");x+=34;e=node(x,88,"all-gather","CCL ①","var(--amber)",true);x=e;}
+  edge(x,x+34,REPL,"repl");x+=34;
+  e=node(x,96,"wqkv","col-parallel",HEAD);x=e;
+  edge(x,x+34,HEAD,"heads");x+=34;
+  /* corridor group */
+  o+='<rect x="'+(x-8)+'" y="'+(y-26)+'" width="468" height="'+(bh+52)+'" rx="12" fill="none" stroke="var(--green)" stroke-dasharray="5 5"/>'
+    +'<text x="'+(x+226)+'" y="'+(y-32)+'" text-anchor="middle" class="svsm" fill="var(--green)">zero-comm corridor — everything head-local</text>';
+  e=node(x,150,"qk/v-norm · RoPE","per-head · replicated w",HEAD);x=e;
+  edge(x,x+26,HEAD);x+=26;
+  e=node(x,140,"KV$ · SDPA","scale 1.0 · win 1024",HEAD);x=e;
+  edge(x,x+40,HEAD,"heads");x+=40;
+  e=node(x,96,"concat","→[B,1024]",HEAD);x=e;
+  edge(x,x+34,HEAD,"shard");x+=34;
+  e=node(x,96,"o_proj","row-parallel",PART);x=e;
+  edge(x,x+38,PART,"partial");x+=38;
+  e=node(x,sp?104:96,sp?"reduce-scatter":"all-reduce",sp?"CCL ②":"the CCL","var(--amber)",true);x=e;
+  edge(x,x+34,sp?SEQ:REPL,sp?"seq ⅛":"repl");x+=34;
+  e=node(x,86,"+ residual","",sp?SEQ:REPL);x=e;
+  edge(x,x+34,sp?SEQ:REPL,sp?"seq ⅛":"repl");x+=34;
+  e=node(x,104,"post-norm","→ MLP",sp?SEQ:REPL);x=e;
+  const svg=$("gr-svg");svg.setAttribute("viewBox","0 0 "+(x+16)+" 216");svg.innerHTML=o;
+  $("gr-count").textContent=sp?"2":"1";
+  $("gr-cap").innerHTML=sp
+    ?"TP + SP: two CCLs per block (AG entering the TP region, RS leaving it) — same total bytes as the one all-reduce, and every grey 'repl' edge outside the corridor turned violet (⅛ memory)."
+    :"plain TP, as gemma4 ships: <b>one</b> amber node. Ten ops, one toll booth. Edges show how each tensor lives on the 8-device mesh.";
+}
+document.querySelectorAll("button[data-gr]").forEach(b=>{
+  b.onclick=()=>{grMode=b.dataset.gr;
+    document.querySelectorAll("button[data-gr]").forEach(x=>x.classList.toggle("on",x===b));grRender();};
+});
+grRender();
+</script>
+</body>
+</html>

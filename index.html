@@ -78,6 +78,17 @@ footer a{color:var(--teal);text-decoration:none}
       </span>
       <span class="go">open ▸</span>
     </a>
+    <a class="card" href="tensor-parallel/">
+      <span class="icon">🪓</span>
+      <span>
+        <span class="nm">Tensor Parallel Dojo</span>
+        <span class="ds" style="display:block">One Gemma-4 attention block, eight chips: Megatron column/row
+        cuts, dealing GQA heads to devices, the zero-communication corridor, the single all-reduce that
+        closes the block — and what sequence parallelism changes.</span>
+        <span class="chips"><code>column-parallel</code><code>row-parallel</code><code>ttnn.all_reduce</code><code>reduce-scatter + all-gather</code><code>GQA</code><code>kv_replicated</code></span>
+      </span>
+      <span class="go">open ▸</span>
+    </a>
   </div>
 
   <footer>built from <a href="https://github.com/tenstorrent/tt-metal">tenstorrent/tt-metal</a> kernel_dojo
