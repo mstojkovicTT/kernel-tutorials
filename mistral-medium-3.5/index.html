@@ -1,0 +1,1102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mistral Medium 3.5 Anatomy</title>
+<meta name="description" content="Interactive architecture walkthrough of Mistral-Medium-3.5-128B: per-op shape tracing, GQA explorer, KV-cache growth, parameter treemap, prefill-vs-decode roofline — every number computed live from the verified config.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>">
+<style>
+:root{
+  --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
+  --line:#2a3245; --text:#e6eaf3; --muted:#8f97ab; --faint:#5b647a;
+  --teal:#45c8bb; --amber:#e8a84c; --violet:#9d7bf5; --red:#ef6b6b; --green:#5bc17e;
+  --hl:#233048;
+  /* chart-fill palette (validated: dark surface, adjacency chain violet-red-teal-amber) */
+  --c-att:#12a291; --c-mlp:#876ad2; --c-emb:#ba873d; --c-vis:#bd5454; --c-oth:#5b647a;
+  --mono:ui-monospace,"SF Mono","Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f2f3f7; --panel:#ffffff; --panel2:#e9ebf3; --code-bg:#f6f7fb;
+    --line:#d4d8e4; --text:#20263a; --muted:#5d6579; --faint:#8b92a6;
+    --teal:#0d8f82; --amber:#a86f10; --violet:#6b46d8; --red:#c04545; --green:#2e8f57;
+    --hl:#dfe7f5;
+    --c-att:#0d8f82; --c-mlp:#6b46d8; --c-emb:#a86f10; --c-vis:#c04545; --c-oth:#5d6579;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f2f3f7; --panel:#ffffff; --panel2:#e9ebf3; --code-bg:#f6f7fb;
+  --line:#d4d8e4; --text:#20263a; --muted:#5d6579; --faint:#8b92a6;
+  --teal:#0d8f82; --amber:#a86f10; --violet:#6b46d8; --red:#c04545; --green:#2e8f57;
+  --hl:#dfe7f5;
+  --c-att:#0d8f82; --c-mlp:#6b46d8; --c-emb:#a86f10; --c-vis:#c04545; --c-oth:#5d6579;
+}
+:root[data-theme="dark"]{
+  --bg:#0e1118; --panel:#151a24; --panel2:#1b2230; --code-bg:#10141d;
+  --line:#2a3245; --text:#e6eaf3; --muted:#8f97ab; --faint:#5b647a;
+  --teal:#45c8bb; --amber:#e8a84c; --violet:#9d7bf5; --red:#ef6b6b; --green:#5bc17e;
+  --hl:#233048;
+  --c-att:#12a291; --c-mlp:#876ad2; --c-emb:#ba873d; --c-vis:#bd5454; --c-oth:#5b647a;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:15px;line-height:1.55;overflow:hidden}
+h1,h2,h3{font-family:var(--mono);letter-spacing:-.02em;text-wrap:balance;margin:0}
+code,pre,kbd,.mono{font-family:var(--mono)}
+button{font-family:var(--mono);cursor:pointer}
+a{color:var(--teal)}
+#deck{height:calc(100% - 52px);position:relative}
+.slide{display:none;height:100%;overflow-y:auto;overflow-x:hidden}
+.slide.active{display:block;animation:fadein .28s ease}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){.slide.active{animation:none}}
+.wrap{max-width:1280px;margin:0 auto;padding:26px 40px 40px}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.eyebrow b{color:var(--teal);font-weight:600}
+h2{font-size:26px;margin-bottom:6px}
+.lede{color:var(--muted);max-width:78ch;margin:4px 0 18px}
+.lede code{color:var(--text);font-size:.92em}
+.src-note{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:16px}
+.t{color:var(--teal)} .a{color:var(--amber)} .v{color:var(--violet)} .r{color:var(--red)} .g{color:var(--green)}
+#deckbar{height:52px;border-top:1px solid var(--line);background:var(--panel);
+  display:flex;align-items:center;gap:14px;padding:0 20px}
+#deckbar .title{font-family:var(--mono);font-size:12px;color:var(--muted);flex:1;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#deckbar .dots{display:flex;gap:8px}
+#deckbar .dots button{width:10px;height:10px;border-radius:50%;border:1px solid var(--faint);background:transparent;padding:0}
+#deckbar .dots button.on{background:var(--teal);border-color:var(--teal)}
+#deckbar .dots button:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+.navbtn{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:6px 14px;font-size:13px}
+.navbtn:hover{border-color:var(--teal)}
+.navbtn:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+#pgnum{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:44px;text-align:center}
+.hero{display:flex;flex-direction:column;justify-content:center;min-height:82%;max-width:1120px;margin:0 auto;padding:40px}
+.hero h1{font-size:clamp(34px,5.4vw,62px);line-height:1.06;font-weight:700}
+.hero h1 .dim{color:var(--faint)}
+.hero .sub{font-size:17px;color:var(--muted);max-width:72ch;margin-top:16px}
+.hero .hint{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:26px}
+kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 6px;font-size:11px;background:var(--panel)}
+.panelbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
+table.opstable{border-collapse:collapse;width:100%;font-size:13.5px}
+table.opstable th,table.opstable td{border:1px solid var(--line);padding:6px 11px;text-align:left}
+table.opstable th{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--panel2)}
+table.opstable code{font-size:12.5px}
+table.opstable td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.twocol{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:14px}
+@media (max-width:980px){.twocol{grid-template-columns:1fr}}
+.simbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0 14px}
+.simbar .sp{flex:1}
+.ctl{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:7px 16px;font-size:13px}
+.ctl:hover{border-color:var(--teal)}
+.ctl:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.ctl.primary{background:var(--teal);color:var(--bg);border-color:var(--teal);font-weight:700}
+.optgrp{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--muted)}
+.optgrp button{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px}
+.optgrp button.on{border-color:var(--teal);color:var(--teal);background:color-mix(in srgb,var(--teal) 10%,transparent)}
+.optgrp button:focus-visible{outline:2px solid var(--teal);outline-offset:1px}
+.stepcap{font-family:var(--mono);font-size:12.5px;color:var(--muted);background:var(--code-bg);
+  border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin-top:12px;min-height:44px}
+.stepcap b{color:var(--text)}
+.knobs{display:flex;gap:18px;flex-wrap:wrap;margin-top:26px}
+.knob{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-width:150px}
+.knob label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.knob input[type=number]{width:110px;background:var(--code-bg);border:1px solid var(--line);color:var(--text);
+  font-family:var(--mono);font-size:15px;border-radius:6px;padding:6px 9px}
+.knob input:focus-visible{outline:2px solid var(--teal)}
+.readout{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0}
+.ro{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 14px;min-width:130px}
+.ro .k{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+.ro .val{font-family:var(--mono);font-size:16px;font-variant-numeric:tabular-nums}
+.ro .val small{font-size:11px;color:var(--muted)}
+input[type=range]{accent-color:var(--teal);width:100%}
+svg text{font-family:var(--mono)}
+.svgbox{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px;overflow-x:auto}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-family:var(--mono);font-size:11.5px;color:var(--muted);margin:8px 2px}
+.legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+#tmtip{position:fixed;pointer-events:none;background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+  padding:8px 12px;font-family:var(--mono);font-size:12px;z-index:40;display:none;max-width:340px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+#tmtip .f{color:var(--muted);font-size:11px}
+.recapgrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+@media (max-width:1080px){.recapgrid{grid-template-columns:1fr 1fr}}
+@media (max-width:700px){.recapgrid{grid-template-columns:1fr}}
+.recapgrid .panelbox{padding:12px 14px;font-size:13px}
+.recapgrid h3{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.recapgrid table{width:100%;border-collapse:collapse;font-size:12.5px}
+.recapgrid td{padding:2.5px 6px;border-bottom:1px solid var(--line)}
+.recapgrid tr:last-child td{border-bottom:none}
+.recapgrid td.num{font-family:var(--mono);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+</style>
+</head>
+<body>
+
+<div id="deck">
+
+<!-- ══════════ 1 · title ══════════ -->
+<section class="slide" data-title="Mistral-Medium-3.5-128B">
+  <div class="hero">
+    <p class="eyebrow"><b>architecture anatomy</b> · verified from the open checkpoint</p>
+    <h1>Mistral Medium 3.5<span class="dim"> · 128B</span></h1>
+    <p class="sub">Dense <span class="mono" data-f="Ltxt"></span>-layer decoder (<span class="mono" data-f="ptotal"></span> params, checkpoint-exact),
+      256k context via YaRN, Pixtral-family vision tower, hybrid reasoning (<code>none</code>/<code>high</code>), Modified MIT.
+      Every number on every slide is computed from one <code>CONFIG</code> object extracted from
+      <code>config.json</code> / <code>params.json</code> / safetensors shard headers.</p>
+    <div class="knobs">
+      <div class="knob"><label>batch B</label><input id="kB" type="number" min="1" max="256" step="1" value="1"></div>
+      <div class="knob"><label>prefill S (tokens)</label><input id="kS" type="number" min="1024" max="262144" step="1024" value="8192"></div>
+      <div class="knob"><label>decode context</label><input id="kC" type="number" min="1024" max="262144" step="1024" value="32768"></div>
+      <div class="knob"><label>KV precision</label>
+        <span class="optgrp"><button id="kvbf" class="on">bf16</button><button id="kvfp">fp8</button></span></div>
+    </div>
+    <p class="hint">← → slides · <kbd>space</kbd> steps the simulations · knobs propagate to every slide</p>
+  </div>
+</section>
+
+<!-- ══════════ 2 · notation ══════════ -->
+<section class="slide" data-title="Notation">
+  <div class="wrap">
+    <p class="eyebrow"><b>02</b> · fixed notation</p>
+    <h2>Notation — used on every edge of every diagram</h2>
+    <p class="lede">Values from <code>config.json → text_config</code> (cross-checked against <code>params.json</code> and the checkpoint's tensor shapes).</p>
+    <div class="twocol">
+      <div class="panelbox"><table class="opstable" id="notTable"></table></div>
+      <div class="panelbox"><table class="opstable" id="cfgTable"></table>
+        <p class="src-note" id="yarnNote"></p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 3 · whole model ══════════ -->
+<section class="slide" data-title="Whole model">
+  <div class="wrap">
+    <p class="eyebrow"><b>03</b> · block diagram</p>
+    <h2>Tokens & image patches → logits</h2>
+    <p class="lede">Text path below, vision path above; image tokens are projected to <code>d_model</code> and scattered into the sequence at <code>&lt;image&gt;</code> positions (token id 10).</p>
+    <div class="legend" id="leg3"></div>
+    <div class="svgbox" id="svgModel"></div>
+    <p class="src-note">module names exactly as in the checkpoint: <code>model.language_model.*</code>, <code>model.vision_tower.*</code>, <code>model.multi_modal_projector.*</code>, <code>lm_head</code> · no biases anywhere · no QK-norm · untied embeddings</p>
+  </div>
+</section>
+
+<!-- ══════════ 4 · shape tracer ══════════ -->
+<section class="slide" data-title="Shape tracer">
+  <div class="wrap">
+    <p class="eyebrow"><b>04</b> · simulation — one decoder layer</p>
+    <h2>Shape tracer</h2>
+    <div class="simbar">
+      <button class="ctl primary" id="trStep">Step ▸</button>
+      <button class="ctl" id="trReset">Reset</button>
+      <span class="optgrp">phase <button id="trPre" class="on">prefill</button><button id="trDec">decode</button></span>
+      <span class="sp"></span>
+      <span class="optgrp mono" id="trPos"></span>
+    </div>
+    <div class="twocol">
+      <div class="svgbox" id="svgTrace"></div>
+      <div>
+        <div class="readout">
+          <div class="ro" style="min-width:230px"><div class="k">op</div><div class="val" id="trOp">—</div></div>
+          <div class="ro"><div class="k">FLOPs this op</div><div class="val" id="trF">—</div></div>
+          <div class="ro"><div class="k">cumulative (layer)</div><div class="val" id="trCum">—</div></div>
+        </div>
+        <div class="readout">
+          <div class="ro" style="flex:1"><div class="k">weight</div><div class="val" id="trW" style="font-size:13.5px">—</div></div>
+        </div>
+        <div class="readout">
+          <div class="ro" style="flex:1"><div class="k">input → output</div><div class="val" id="trIO" style="font-size:13.5px">—</div></div>
+        </div>
+        <div class="stepcap" id="trCap">Press <b>Step</b> — the hidden state enters the layer as <b>x [B,S,d_model]</b>.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 5 · GQA ══════════ -->
+<section class="slide" data-title="GQA explorer">
+  <div class="wrap">
+    <p class="eyebrow"><b>05</b> · grouped-query attention</p>
+    <h2>GQA explorer — slide H<sub>kv</sub> from MQA to MHA</h2>
+    <p class="lede">Q heads are fixed at <span class="mono" data-f="H"></span>; the slider regroups them onto H<sub>kv</sub> KV heads. The shipped model uses <span class="mono t" data-f="Hkv"></span>.</p>
+    <div style="max-width:640px"><input id="gqaSlider" type="range" min="0" max="11" step="1" value="5">
+      <div class="legend" id="gqaTicks" style="justify-content:space-between"></div></div>
+    <div class="readout">
+      <div class="ro"><div class="k">H_kv</div><div class="val" id="gqaHkv">—</div></div>
+      <div class="ro"><div class="k">q-heads / kv group</div><div class="val" id="gqaG">—</div></div>
+      <div class="ro" style="min-width:240px"><div class="k">k_proj / v_proj weight</div><div class="val" id="gqaKW" style="font-size:14px">—</div></div>
+      <div class="ro"><div class="k">KV bytes / token (model)</div><div class="val" id="gqaKV">—</div></div>
+      <div class="ro"><div class="k">KV vs MHA</div><div class="val" id="gqaSave">—</div></div>
+    </div>
+    <div class="svgbox" id="svgGqa"></div>
+  </div>
+</section>
+
+<!-- ══════════ 6 · attention micro-sim ══════════ -->
+<section class="slide" data-title="Attention micro-sim">
+  <div class="wrap">
+    <p class="eyebrow"><b>06</b> · simulation — toy S=8, d_head=4</p>
+    <h2>Attention micro-sim: QKᵀ → mask → softmax → ·V</h2>
+    <div class="simbar">
+      <button class="ctl primary" id="atStep">Step ▸</button>
+      <button class="ctl" id="atReset">Reset</button>
+      <span class="sp"></span><span class="optgrp mono" id="atPos"></span>
+    </div>
+    <div class="svgbox" id="svgAttn"></div>
+    <div class="stepcap" id="atCap">Each <b>Step</b> processes one query row <i>i</i>: scores <b>q<sub>i</sub>·k<sub>j</sub>ᵀ/√d<sub>h</sub></b> for j ≤ i (causal), row softmax, then the weighted sum of V rows.</div>
+  </div>
+</section>
+
+<!-- ══════════ 7 · KV growth ══════════ -->
+<section class="slide" data-title="KV cache vs context">
+  <div class="wrap">
+    <p class="eyebrow"><b>07</b> · memory vs context</p>
+    <h2>KV cache grows, weights don't</h2>
+    <div class="simbar">
+      <div style="flex:1;min-width:300px"><input id="kvSlider" type="range" min="0" max="262144" step="4096" value="32768"></div>
+      <span class="optgrp">KV <button id="kv7bf" class="on">bf16</button><button id="kv7fp">fp8</button></span>
+      <span class="optgrp">weights <button id="w7fp" class="on">fp8 (shipped)</button><button id="w7bf">bf16</button></span>
+    </div>
+    <div class="readout">
+      <div class="ro"><div class="k">context · B</div><div class="val" id="kv7ctx">—</div></div>
+      <div class="ro" style="min-width:250px"><div class="k">KV formula</div><div class="val" id="kv7f" style="font-size:12.5px">—</div></div>
+      <div class="ro"><div class="k">KV total</div><div class="val" id="kv7kv">—</div></div>
+      <div class="ro"><div class="k">weights + KV</div><div class="val" id="kv7tot">—</div></div>
+    </div>
+    <div class="legend" id="leg7"></div>
+    <div class="svgbox" id="svgKv"></div>
+  </div>
+</section>
+
+<!-- ══════════ 8 · MLP ══════════ -->
+<section class="slide" data-title="MLP block">
+  <div class="wrap">
+    <p class="eyebrow"><b>08</b> · SwiGLU MLP</p>
+    <h2>The block that owns the model: <span class="v">gated MLP</span></h2>
+    <p class="lede">Three matrices, not two: <code>down( SiLU(gate(x)) ⊙ up(x) )</code>. Per layer it is <span class="mono" id="mlpRatio"></span> the size of attention.</p>
+    <div class="svgbox" id="svgMlp"></div>
+    <div class="legend" id="leg8"></div>
+    <div class="svgbox" id="svgMlpBar" style="margin-top:12px"></div>
+  </div>
+</section>
+
+<!-- ══════════ 9 · treemap ══════════ -->
+<section class="slide" data-title="Parameter budget">
+  <div class="wrap">
+    <p class="eyebrow"><b>09</b> · where the 128B live</p>
+    <h2>Parameter budget — hover a block</h2>
+    <div class="readout">
+      <div class="ro"><div class="k">sum of blocks</div><div class="val" id="tmSum">—</div></div>
+      <div class="ro"><div class="k">decoder trunk share</div><div class="val" id="tmTrunk">—</div></div>
+    </div>
+    <div class="svgbox" id="svgTree"></div>
+    <p class="src-note">areas exact except the norms sliver (2,174,976 params — drawn at minimum visible height, marked †)</p>
+  </div>
+</section>
+
+<!-- ══════════ 10 · roofline ══════════ -->
+<section class="slide" data-title="Prefill vs decode">
+  <div class="wrap">
+    <p class="eyebrow"><b>10</b> · roofline</p>
+    <h2>Prefill is compute, decode is bandwidth</h2>
+    <div class="simbar">
+      <span class="optgrp">phase <button id="rfPre" class="on">prefill</button><button id="rfDec">decode</button></span>
+      <span class="sp"></span>
+      <span class="optgrp mono" id="rfHw"></span>
+    </div>
+    <div class="legend" id="leg10"></div>
+    <div class="twocol">
+      <div class="svgbox" id="svgRoof"></div>
+      <div class="panelbox" style="overflow-x:auto"><table class="opstable" id="rfTable"></table>
+        <p class="src-note" id="rfNote"></p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 11 · recap ══════════ -->
+<section class="slide" data-title="Recap">
+  <div class="wrap">
+    <p class="eyebrow"><b>11</b> · design sheet, compressed</p>
+    <h2>Recap — all of it, still computed from <code>CONFIG</code></h2>
+    <div class="recapgrid" id="recap"></div>
+    <p class="src-note" style="margin-top:16px">
+      sources: <a href="https://huggingface.co/mistralai/Mistral-Medium-3.5-128B">mistralai/Mistral-Medium-3.5-128B</a> @ main
+      (config.json · params.json · safetensors headers, 2,465 tensors, byte-exact) ·
+      config fix <span class="mono">c4be198</span> "Fixing Transformers config" 2026-05-01 (<span class="mono">mscale_all_dim 1.0→0.0</span>) ·
+      transformers v5.12.1 (ministral3 / mistral3 / pixtral) ·
+      <a href="https://huggingface.co/mistralai/Mistral-Medium-3.5-128B-EAGLE">…-EAGLE</a> draft (same trunk, n_layers=2) ·
+      <a href="design-sheet.html">printable design sheet</a> ·
+      <a href="https://github.com/mstojkovicTT/kernel-tutorials/blob/main/mistral-medium-3.5/README.md">full per-op analysis</a>
+    </p>
+  </div>
+</section>
+
+</div>
+
+<div id="deckbar">
+  <button class="navbtn" id="prevb">←</button>
+  <button class="navbtn" id="nextb">→</button>
+  <span id="pgnum">1/11</span>
+  <span class="title" id="barTitle"></span>
+  <span class="dots" id="dots"></span>
+</div>
+<div id="tmtip"></div>
+
+<script>
+"use strict";
+/* ════════════════════════════════════════════════════════════════════
+   SINGLE SOURCE OF TRUTH — extracted 2026-08-19 from
+   mistralai/Mistral-Medium-3.5-128B @ main (post-c4be198 config fix):
+   config.json, params.json, and the safetensors shard headers.
+   Every shape label, chart, and readout below is COMPUTED from this.
+   ════════════════════════════════════════════════════════════════════ */
+const CONFIG = {
+  name: "Mistral-Medium-3.5-128B",
+  d_model: 12288, L: 88, H: 96, H_kv: 8, d_head: 128, d_ff: 28672, V: 131072,
+  act: "SiLU (SwiGLU)", norm: "RMSNorm", norm_eps: 1e-5,
+  tied_embeddings: false, biases: false, qk_norm: false, sliding_window: null,
+  max_ctx: 262144,
+  rope: { theta: 1e6, type: "yarn", factor: 64, orig_max: 4096,
+          beta_fast: 4, beta_slow: 1, mscale: 1.0, mscale_all_dim: 0.0,
+          buggy_mscale_all_dim: 1.0, fix_commit: "c4be198", fix_date: "2026-05-01" },
+  vision: { d: 1664, L: 48, H: 16, d_head: 104, d_ff: 8192,
+            patch: 14, img: 1540, ch: 3, theta: 1e4, merge: 2, feature_layer: -1 },
+  image_token_index: 10,
+  shipped: { lm_dtype: "fp8_e4m3", rest_dtype: "bf16", total_bytes: 133605834656 },
+  checkpoint_total_params: 127704210176,   // sum of all shard-header shapes (scales excluded)
+  eagle: { layers: 2 },                    // …-EAGLE params.json: identical trunk, n_layers=2
+  hw: { name: "H100 SXM", bf16_flops: 990e12, hbm_bw: 3.35e12, cap_gib: 80 },
+};
+
+/* ───────── derived quantities (pure) ───────── */
+function derive(c){
+  const d=c.d_model, dh=c.d_head, H=c.H, Hkv=c.H_kv, dff=c.d_ff, V=c.V, L=c.L;
+  const attn = d*H*dh + d*Hkv*dh*2 + H*dh*d;   // q + (k,v) + o
+  const mlp  = 3*d*dff;
+  const layer = attn + mlp + 2*d;
+  const emb = V*d;
+  const lm  = L*layer + 2*emb + d;
+  const vc = c.vision;
+  const vLayer = 4*vc.d*vc.d + 3*vc.d*vc.d_ff + 2*vc.d;
+  const vis = vc.L*vLayer + vc.d*vc.ch*vc.patch*vc.patch + vc.d;
+  const projMerge = vc.d * vc.d*vc.merge*vc.merge;
+  const proj = vc.d + projMerge + vc.d*d + d*d;
+  const total = lm + vis + proj;
+  const patches = Math.pow(Math.floor(vc.img/vc.patch), 2);
+  const imgTokens = patches / (vc.merge*vc.merge);
+  return {
+    attn, mlp, layer, emb, lm, vis, vLayer, proj, projMerge, total,
+    attnAll: L*attn, mlpAll: L*mlp, normsAll: L*2*d + d,
+    q: d*H*dh, k: d*Hkv*dh, o: H*dh*d, gate: d*dff, down: dff*d,
+    kvTokLayer: b => 2*Hkv*dh*b, kvTok: b => 2*L*Hkv*dh*b,
+    patches, imgTokens,
+    yarnAF: 0.1*Math.log(c.rope.factor) + 1,
+    G: H/Hkv,
+  };
+}
+const DER = derive(CONFIG);
+
+/* workload knobs (defaults per reference workload) */
+const W = { B: 1, S: 8192, ctx: 32768, kvbytes: 2 };
+
+/* ───────── formatting (pure) ───────── */
+const fmtI = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+function trimZeros(t){ return t.includes(".") ? t.replace(/\.?0+$/,"") : t; }
+function fmtF(x){
+  if (x === 0) return "0";
+  const u=[[1e12,"TF"],[1e9,"GF"],[1e6,"MF"],[1e3,"kF"]];
+  for (const [v,s] of u) if (x>=v) return trimZeros((x/v).toPrecision(4))+" "+s;
+  return Math.round(x)+" F";
+}
+function fmtBy(x){
+  const u=[[1024**4,"TiB"],[1024**3,"GiB"],[1024**2,"MiB"],[1024,"KiB"]];
+  for (const [v,s] of u) if (x>=v) return trimZeros((x/v).toPrecision(3))+" "+s;
+  return Math.round(x)+" B";
+}
+const fmtBn = n => (n/1e9).toFixed(n>=1e10?2:3)+"B";
+
+/* ───────── shape-tracer step list (pure) ───────── */
+function tracerSteps(c, w, phase){
+  const d=c.d_model, dh=c.d_head, H=c.H, Hkv=c.H_kv, dff=c.d_ff;
+  const S = phase==="prefill" ? w.S : 1;
+  const ctx = phase==="prefill" ? w.S : w.ctx;   // attention span
+  const B = w.B, sq = `[B,S,d]`, sqn = `[${B}, ${S}, ${d}]`;
+  const st = (id,block,name,fam,wsym,wnum,io,fl,cap)=>({id,block,name,fam,wsym,wnum,io,fl,cap});
+  return [
+    st("ln1","ln1","input_layernorm","oth","[d_model]",`[${d}]`,
+       `${sq} ${sqn} → same`, 4*S*d*B,
+       "RMSNorm: x·rsqrt(mean(x²)+1e-5)·w — no bias, no mean-subtract."),
+    st("q","qkv","self_attn.q_proj","att","[H·d_head, d_model]",`[${H*dh}, ${d}]`,
+       `${sq} → [B,S,H·d_head] [${B}, ${S}, ${H*dh}]`, 2*B*S*d*H*dh,
+       `all ${H} query heads — the full-width projection.`),
+    st("k","qkv","self_attn.k_proj","att","[H_kv·d_head, d_model]",`[${Hkv*dh}, ${d}]`,
+       `${sq} → [B,S,H_kv·d_head] [${B}, ${S}, ${Hkv*dh}]`, 2*B*S*d*Hkv*dh,
+       `GQA: only ${Hkv} KV heads ⇒ ${H/Hkv}× narrower than q_proj.`),
+    st("v","qkv","self_attn.v_proj","att","[H_kv·d_head, d_model]",`[${Hkv*dh}, ${d}]`,
+       `${sq} → [${B}, ${S}, ${Hkv*dh}]`, 2*B*S*d*Hkv*dh,
+       "same shape as k_proj."),
+    st("rope","rope","RoPE (yarn)","oth","cos/sin ×"+(0.1*Math.log(c.rope.factor)+1).toFixed(5),"θ="+fmtI(c.rope.theta),
+       `q,k rotated in place — [B,H,S,d_head] [${B}, ${H}, ${S}, ${dh}]`, 3*B*S*(H+Hkv)*dh,
+       `YaRN: factor ${c.rope.factor} × ${fmtI(c.rope.orig_max)} = ${fmtI(c.max_ctx)}; cos/sin scaled by 1.41589 (the c4be198 fix).`),
+    st("kvapp","kvapp","KV-cache append","oth","—","—",
+       `k,v → cache [B,H_kv,S_ctx,d_head] [${B}, ${Hkv}, ${ctx}, ${dh}] ×2`, 0,
+       `pure write: ${fmtBy(2*Hkv*dh*w.kvbytes)} /token/layer.`),
+    st("qkt","qkt","QKᵀ","att","—","—",
+       `[B,H,S,d_h]·[B,H_kv,d_h,S_ctx] → scores [${B}, ${H}, ${S}, ${ctx}]`, 2*B*H*S*ctx*dh,
+       `each KV head serves ${H/Hkv} query heads (repeat_kv). Scale 1/√${dh}.`),
+    st("smax","smax","causal softmax","oth","—","—",
+       `scores [${B}, ${H}, ${S}, ${ctx}] → probs, rows sum to 1`, 5*B*H*S*ctx,
+       "future positions masked to −∞ before exp."),
+    st("av","av","attn · V","att","—","—",
+       `[B,H,S,S_ctx]·[B,H_kv,S_ctx,d_h] → [${B}, ${H}, ${S}, ${dh}]`, 2*B*H*S*ctx*dh,
+       "merge heads → [B, S, H·d_head]."),
+    st("o","o","self_attn.o_proj","att","[d_model, H·d_head]",`[${d}, ${H*dh}]`,
+       `[B,S,H·d_head] → ${sq} ${sqn}`, 2*B*S*H*dh*d,
+       "back to the residual width."),
+    st("res1","res1","residual add","oth","—","—",
+       `x + attn_out → ${sqn}`, B*S*d,
+       "the residual spine carries the layer."),
+    st("ln2","ln2","post_attention_layernorm","oth","[d_model]",`[${d}]`,
+       `${sq} → same`, 4*S*d*B,
+       "second RMSNorm, pre-MLP."),
+    st("gate","gateup","mlp.gate_proj","mlp","[d_ff, d_model]",`[${dff}, ${d}]`,
+       `${sq} → [B,S,d_ff] [${B}, ${S}, ${dff}]`, 2*B*S*d*dff,
+       `expansion ${ (dff/d).toFixed(2) }×.`),
+    st("up","gateup","mlp.up_proj","mlp","[d_ff, d_model]",`[${dff}, ${d}]`,
+       `${sq} → [${B}, ${S}, ${dff}]`, 2*B*S*d*dff,
+       "the linear branch of the gate."),
+    st("silu","silu","SiLU ⊙","oth","—","—",
+       `SiLU(gate) ⊙ up → [${B}, ${S}, ${dff}]`, 5*B*S*dff,
+       "elementwise — nearly free, entirely bandwidth."),
+    st("down","down","mlp.down_proj","mlp","[d_model, d_ff]",`[${d}, ${dff}]`,
+       `[B,S,d_ff] → ${sq} ${sqn}`, 2*B*S*dff*d,
+       "contraction back to d_model."),
+    st("res2","res2","residual add","oth","—","—",
+       `x + mlp_out → ${sqn} — layer done (×${c.L})`, B*S*d,
+       `layer complete. ×${c.L} layers, then final norm → lm_head [${c.V}, ${d}].`),
+  ];
+}
+
+/* ───────── GQA (pure) ───────── */
+function divisors(n){ const r=[]; for(let i=1;i<=n;i++) if(n%i===0) r.push(i); return r; }
+const GQA_CHOICES = divisors(CONFIG.H);   // 1,2,3,4,6,8,12,16,24,32,48,96
+
+/* ───────── toy attention (pure, seeded) ───────── */
+function toyAttn(S=8, dh=4){
+  let seed=1337;
+  const rnd=()=>{ seed=(seed*1103515245+12345)&0x7fffffff; return ((seed>>16)%5)-2; }; // ints -2..2
+  const mk=()=>Array.from({length:S},()=>Array.from({length:dh},rnd));
+  const Q=mk(), K=mk(), V=mk();
+  const scores=[], probs=[], out=[];
+  for(let i=0;i<S;i++){
+    const sr=Array.from({length:S},(_,j)=> j<=i ? Q[i].reduce((a,q,t)=>a+q*K[j][t],0)/Math.sqrt(dh) : null);
+    const mx=Math.max(...sr.filter(x=>x!==null));
+    const ex=sr.map(x=>x===null?0:Math.exp(x-mx)); const Z=ex.reduce((a,b)=>a+b,0);
+    const pr=ex.map(e=>e/Z);
+    const or_=Array.from({length:dh},(_,t)=> pr.reduce((a,p,j)=>a+p*V[j][t],0));
+    scores.push(sr); probs.push(pr); out.push(or_);
+  }
+  return {S,dh,Q,K,V,scores,probs,out};
+}
+
+/* ───────── KV & memory (pure) ───────── */
+function kvTotal(ctx, B, bytes){ return DER.kvTok(bytes) * ctx * B; }
+function weightBytes(mode){          // "fp8" = as shipped, "bf16" = everything bf16
+  return mode==="fp8" ? CONFIG.shipped.total_bytes : CONFIG.checkpoint_total_params*2;
+}
+
+/* ───────── roofline ops (pure) ───────── */
+function rooflineOps(c, w, phase){
+  const d=c.d_model, dh=c.d_head, H=c.H, Hkv=c.H_kv, dff=c.d_ff, e=2;
+  const S = phase==="prefill" ? w.S : 1;
+  const ctx = phase==="prefill" ? w.S : w.ctx;
+  const B = w.B;
+  const o=(name,fam,fl,by)=>({name,fam,fl,by,ai:fl/by});
+  return [
+    o("q_proj / o_proj","att", 2*B*S*d*H*dh,  d*H*dh*e + B*S*d*e + B*S*H*dh*e),
+    o("k/v_proj","att",        2*B*S*d*Hkv*dh, d*Hkv*dh*e + B*S*d*e + B*S*Hkv*dh*e),
+    o("QKᵀ (naive)","att",     2*B*H*S*ctx*dh, B*S*H*dh*e + B*ctx*Hkv*dh*e + B*H*S*ctx*e),
+    o("attn·V (naive)","att",  2*B*H*S*ctx*dh, B*H*S*ctx*e + B*ctx*Hkv*dh*e + B*S*H*dh*e),
+    o("softmax","oth",         5*B*H*S*ctx,    2*B*H*S*ctx*e),
+    o("gate/up_proj","mlp",    2*B*S*d*dff,    d*dff*e + B*S*d*e + B*S*dff*e),
+    o("down_proj","mlp",       2*B*S*dff*d,    d*dff*e + B*S*dff*e + B*S*d*e),
+    o("RMSNorm / SiLU⊙","oth", 5*B*S*dff,      3*B*S*dff*e),
+  ];
+}
+
+/* ───────── treemap layout (pure) ─────────
+   contact chain keeps red & amber apart: MLP(violet) slab left;
+   right column top→bottom: vision(red), attention(teal), embed(amber),
+   lm_head(amber), norms(gray, min-height †). */
+function treemapRects(Wd, Ht){
+  const T = DER.total, gap=3;
+  const fams = {
+    mlp:  {v: DER.mlpAll,          c:"var(--c-mlp)", label:"MLP ×"+CONFIG.L,       f:"L·3·d·d_ff = 88·3·12288·28672"},
+    vis:  {v: DER.vis + DER.proj,  c:"var(--c-vis)", label:"vision + projector",   f:"48·(4·1664² + 3·1664·8192 + 2·1664) + patch + proj"},
+    att:  {v: DER.attnAll,         c:"var(--c-att)", label:"attention ×"+CONFIG.L, f:"L·(2·d² + 2·d·H_kv·d_head) = 88·327,155,712"},
+    emb:  {v: DER.emb,             c:"var(--c-emb)", label:"embed_tokens",         f:"V·d = 131072·12288"},
+    head: {v: DER.emb,             c:"var(--c-emb)", label:"lm_head (untied)",     f:"V·d = 131072·12288"},
+    oth:  {v: DER.normsAll,        c:"var(--c-oth)", label:"norms †",              f:"L·2·d + d = 88·24576 + 12288"},
+  };
+  const w1 = Wd * fams.mlp.v / T;
+  const rects = [ {x:0,y:0,w:w1-gap,h:Ht, ...fams.mlp, key:"mlp"} ];
+  const rest = ["vis","att","emb","head","oth"];
+  const restT = rest.reduce((a,k)=>a+fams[k].v,0);
+  let y=0;
+  for(const k of rest){
+    let h = Ht * fams[k].v/restT;
+    if(k==="oth") h = Math.max(h, 6);           // † sliver floor
+    rects.push({x:w1, y, w:Wd-w1, h:Math.max(h-gap,2), ...fams[k], key:k});
+    y+=h;
+  }
+  return rects;
+}
+
+/* ═════════════════ DOM layer (skipped in headless tests) ═════════════════ */
+if (typeof document !== "undefined"){
+
+const $=s=>document.querySelector(s);
+const C=CONFIG, D=DER;
+const FAMC={att:"var(--c-att)",mlp:"var(--c-mlp)",emb:"var(--c-emb)",vis:"var(--c-vis)",oth:"var(--c-oth)"};
+const renderers=[];
+function rerenderAll(){ renderers.forEach(f=>f()); }
+
+/* fill spans bound to config-derived fields */
+function fillFields(){
+  const map={ Ltxt:C.L, ptotal:fmtI(C.checkpoint_total_params), H:"H = "+C.H, Hkv:"H_kv = "+C.H_kv };
+  document.querySelectorAll("[data-f]").forEach(el=>{ el.textContent=map[el.dataset.f]; });
+}
+
+/* ── knobs ── */
+function bindKnobs(){
+  const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+  $("#kB").addEventListener("change",e=>{ W.B=clamp(+e.target.value||1,1,256); e.target.value=W.B; rerenderAll(); });
+  $("#kS").addEventListener("change",e=>{ W.S=clamp(+e.target.value||8192,1024,C.max_ctx); e.target.value=W.S; rerenderAll(); });
+  $("#kC").addEventListener("change",e=>{ W.ctx=clamp(+e.target.value||32768,1024,C.max_ctx); e.target.value=W.ctx; rerenderAll(); });
+  const bf=$("#kvbf"), fp=$("#kvfp");
+  bf.onclick=()=>{ W.kvbytes=2; bf.classList.add("on"); fp.classList.remove("on"); rerenderAll(); };
+  fp.onclick=()=>{ W.kvbytes=1; fp.classList.add("on"); bf.classList.remove("on"); rerenderAll(); };
+}
+
+/* ── slide 2: notation + config ── */
+function renderNotation(){
+  $("#notTable").innerHTML =
+    `<tr><th>sym</th><th>meaning</th><th>value</th></tr>`+
+    [["B","batch size",W.B+" (knob)"],["S","sequence length",fmtI(W.S)+" prefill · decode @ "+fmtI(W.ctx)+" (knobs)"],
+     ["d_model","hidden size",fmtI(C.d_model)],["L","decoder layers",C.L],
+     ["H","query heads",C.H],["H_kv","KV heads (GQA)",C.H_kv],
+     ["d_head","head dim",C.d_head],["d_ff","MLP intermediate",fmtI(C.d_ff)],
+     ["V","vocab size",fmtI(C.V)]]
+    .map(r=>`<tr><td class="mono">${r[0]}</td><td>${r[1]}</td><td class="num">${r[2]}</td></tr>`).join("");
+  $("#cfgTable").innerHTML =
+    `<tr><th>config</th><th>value</th></tr>`+
+    [["activation",C.act],["norm",C.norm+" ε="+C.norm_eps],
+     ["biases / QK-norm","none / none (checkpoint-verified)"],
+     ["tie_word_embeddings",String(C.tied_embeddings)],
+     ["sliding_window",String(C.sliding_window)+" (full attention)"],
+     ["rope_theta",fmtI(C.rope.theta)],
+     ["YaRN factor × orig",C.rope.factor+" × "+fmtI(C.rope.orig_max)+" = "+fmtI(C.max_ctx)],
+     ["beta_fast / beta_slow",C.rope.beta_fast+" / "+C.rope.beta_slow],
+     ["attention_factor","0.1·ln("+C.rope.factor+")+1 = "+D.yarnAF.toFixed(5)],
+     ["H·d_head = d_model",C.H+"·"+C.d_head+" = "+fmtI(C.H*C.d_head)+" ✓"],
+     ["vision (Pixtral)",C.vision.L+"L · d="+C.vision.d+" · "+C.vision.H+"h · patch "+C.vision.patch],
+     ["shipped dtype","LM fp8-E4M3 · vision/proj/head bf16"]]
+    .map(r=>`<tr><td>${r[0]}</td><td class="num">${r[1]}</td></tr>`).join("");
+  $("#yarnNote").innerHTML = `config fix <b class="mono">${C.rope.fix_commit}</b> (${C.rope.fix_date}): `+
+    `<span class="mono">mscale_all_dim ${C.rope.buggy_mscale_all_dim}→${C.rope.mscale_all_dim}</span> — with 1.0 the yarn `+
+    `attention factor computed to exactly 1.0 (disabled); the fix restores ×${D.yarnAF.toFixed(5)} on cos/sin.`;
+}
+
+/* ── svg helpers ── */
+function box(x,y,w,h,fill,label,sub,txtcol){
+  return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="7" fill="${fill}" opacity="0.92"></rect>
+    <text x="${x+w/2}" y="${y+h/2+(sub?-4:4)}" text-anchor="middle" font-size="12.5" font-weight="600" fill="${txtcol||"#fff"}">${label}</text>
+    ${sub?`<text x="${x+w/2}" y="${y+h/2+12}" text-anchor="middle" font-size="10" fill="${txtcol||"#fff"}" opacity="0.85">${sub}</text>`:""}`;
+}
+function arrow(x1,y1,x2,y2,label,above){
+  const mx=(x1+x2)/2, my=(y1+y2)/2;
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--faint)" stroke-width="1.6" marker-end="url(#arr)"></line>
+    ${label?`<text x="${mx}" y="${my+(above?-7:14)}" text-anchor="middle" font-size="10.5" fill="var(--muted)">${label}</text>`:""}`;
+}
+const DEFS=`<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+  <path d="M0 0 L8 4 L0 8 z" fill="var(--faint)"/></marker></defs>`;
+
+/* ── slide 3: whole model ── */
+function renderModel(){
+  const S=W.S,B=W.B, it=D.imgTokens;
+  let s=`<svg viewBox="0 0 1180 430" width="100%" style="min-width:980px">${DEFS}`;
+  // vision path (top)
+  s+=`<text x="20" y="28" font-size="11" fill="var(--faint)">VISION — model.vision_tower (Pixtral-from-scratch, bf16)</text>`;
+  s+=box(20,40,110,52,"var(--c-oth)","image","≤"+C.vision.img+"²·"+C.vision.ch);
+  s+=arrow(130,66,180,66,`[${fmtI(D.patches)}, patch²·3]`,true);
+  s+=box(180,40,120,52,"var(--c-vis)","patch_conv","14×14 s14");
+  s+=arrow(300,66,352,66,`[${fmtI(D.patches)}, ${C.vision.d}]`,true);
+  s+=box(352,28,190,76,"var(--c-vis)",C.vision.L+"× vision block","2-D RoPE θ=10k · SiLU-MLP");
+  s+=arrow(542,66,592,66,"",true);
+  s+=box(592,28,206,76,"var(--c-vis)","projector","RMSNorm → 2×2 merge → GELU");
+  s+=arrow(798,66,880,66,`[${fmtI(it)}, ${fmtI(C.d_model)}]`,true);
+  s+=`<text x="600" y="122" font-size="10" fill="var(--muted)">[${fmtI(D.patches)},${C.vision.d}] → merge [${fmtI(it)}, ${fmtI(C.vision.d*4)}] → [${fmtI(it)}, ${C.vision.d}] → linear₁,₂ → [${fmtI(it)}, ${fmtI(C.d_model)}]</text>`;
+  // scatter node
+  s+=`<circle cx="898" cy="66" r="14" fill="var(--panel2)" stroke="var(--faint)"></circle><text x="898" y="70" text-anchor="middle" font-size="12" fill="var(--text)">⊕</text>`;
+  s+=`<text x="898" y="42" text-anchor="middle" font-size="10" fill="var(--muted)">scatter at &lt;image&gt; (id ${C.image_token_index})</text>`;
+  s+=arrow(898,80,898,148,"",false);
+  // text path (bottom)
+  s+=`<text x="20" y="170" font-size="11" fill="var(--faint)">TEXT — model.language_model (fp8-E4M3)</text>`;
+  s+=box(20,185,120,56,"var(--c-oth)","tokens",`[B,S] = [${B}, ${fmtI(S)}]`);
+  s+=arrow(140,213,196,213,"",true);
+  s+=box(196,185,150,56,"var(--c-emb)","embed_tokens",`[V,d] = [${fmtI(C.V)}, ${fmtI(C.d_model)}]`);
+  s+=arrow(346,213,420,213,`[${B}, ${fmtI(S)}, ${fmtI(C.d_model)}]`,true);
+  // decoder stack
+  s+=`<rect x="420" y="158" width="330" height="112" rx="10" fill="none" stroke="var(--line)" stroke-width="1.5"></rect>`;
+  s+=`<text x="585" y="152" text-anchor="middle" font-size="11.5" fill="var(--muted)">× L = ${C.L} decoder blocks</text>`;
+  s+=box(436,172,140,38,"var(--c-att)","self_attn",`${C.H}Q/${C.H_kv}KV · d_h ${C.d_head}`);
+  s+=box(436,220,140,38,"var(--c-mlp)","mlp (SwiGLU)",`d_ff ${fmtI(C.d_ff)}`);
+  s+=box(592,172,142,38,"var(--c-oth)","2× RMSNorm",`[${fmtI(C.d_model)}]`);
+  s+=`<text x="663" y="243" font-size="10.5" fill="var(--muted)">residual spine</text>`;
+  s+=`<line x1="592" y1="252" x2="734" y2="252" stroke="var(--teal)" stroke-width="2.5" opacity="0.7"></line>`;
+  s+=arrow(750,213,806,213,`[${B}, ${fmtI(S)}, ${fmtI(C.d_model)}]`,true);
+  s+=box(806,185,110,56,"var(--c-oth)","final norm",`[${fmtI(C.d_model)}]`);
+  s+=arrow(916,213,962,213,"",true);
+  s+=box(962,185,120,56,"var(--c-emb)","lm_head",`[${fmtI(C.V)}, ${fmtI(C.d_model)}]`);
+  s+=arrow(1082,213,1132,213,"",true);
+  s+=`<text x="1134" y="207" font-size="11" fill="var(--text)">logits</text>
+      <text x="1134" y="222" font-size="10" fill="var(--muted)">[${B}, ${fmtI(S)},</text>
+      <text x="1134" y="236" font-size="10" fill="var(--muted)"> ${fmtI(C.V)}]</text>`;
+  // param strip
+  s+=`<text x="20" y="310" font-size="11" fill="var(--faint)">PARAMS</text>`;
+  const strip=[["decoder trunk",D.attnAll+D.mlpAll+D.normsAll,"var(--c-mlp)"],["embed+head",2*D.emb,"var(--c-emb)"],["vision+proj",D.vis+D.proj,"var(--c-vis)"]];
+  let x=20, si=0;
+  for(const [lab,v,col] of strip){
+    const w=Math.max(1060*v/D.total, 40);
+    s+=`<rect x="${x}" y="322" width="${w-2}" height="22" rx="4" fill="${col}" opacity="0.9"></rect>`;
+    s+=`<text x="${x+4}" y="${360+(si%2)*15}" font-size="10.5" fill="var(--muted)">${lab} ${fmtBn(v)} (${(100*v/D.total).toFixed(1)}%)</text>`;
+    x+=w; si++;
+  }
+  s+=`<text x="20" y="392" font-size="11.5" fill="var(--text)">Σ = ${fmtI(D.total)} = ${fmtBn(D.total)} ✓ (checkpoint-exact${D.total===C.checkpoint_total_params?"":" MISMATCH!"})</text>`;
+  s+=`</svg>`;
+  $("#svgModel").innerHTML=s;
+  $("#leg3").innerHTML=["att","mlp","emb","vis","oth"].map((k,i)=>
+    `<span><span class="sw" style="background:${FAMC[k]}"></span>${["attention","MLP","embeddings/head","vision","norms/other"][i]}</span>`).join("");
+}
+
+/* ── slide 4: shape tracer ── */
+const TR={i:-1, phase:"prefill", steps:null};
+function trBuild(){ TR.steps=tracerSteps(C,W,TR.phase); }
+function trDiagram(){
+  const blocks=[["ln1","RMSNorm","oth"],["qkv","q/k/v_proj","att"],["rope","RoPE","oth"],["kvapp","KV cache","oth"],
+    ["qkt","QKᵀ","att"],["smax","softmax","oth"],["av","·V","att"],["o","o_proj","att"],["res1","＋","oth"],
+    ["ln2","RMSNorm","oth"],["gateup","gate/up_proj","mlp"],["silu","SiLU⊙","oth"],["down","down_proj","mlp"],["res2","＋","oth"]];
+  const cur = TR.i>=0 ? TR.steps[TR.i].block : null;
+  const bh=30, gap=8; let y=16;
+  let s=`<svg viewBox="0 0 300 ${16+blocks.length*(bh+gap)+8}" width="100%" style="max-width:320px">${DEFS}`;
+  s+=`<line x1="40" y1="8" x2="40" y2="${16+blocks.length*(bh+gap)}" stroke="var(--teal)" stroke-width="2.5" opacity="0.55"></line>`;
+  s+=`<text x="12" y="14" font-size="9" fill="var(--faint)">residual</text>`;
+  for(const [id,lab,fam] of blocks){
+    const on = id===cur;
+    const isR = id==="res1"||id==="res2";
+    s+=`<rect x="${isR?28:64}" y="${y}" width="${isR?24:210}" height="${bh}" rx="${isR?12:6}"
+        fill="${on?FAMC[fam]:"var(--panel2)"}" stroke="${on?FAMC[fam]:"var(--line)"}" stroke-width="1.5"></rect>`;
+    s+=`<text x="${isR?40:64+105}" y="${y+bh/2+4}" text-anchor="middle" font-size="11.5"
+        fill="${on?"#fff":"var(--text)"}" font-weight="${on?700:400}">${lab}</text>`;
+    if(!isR) s+=`<line x1="40" y1="${y+bh/2}" x2="64" y2="${y+bh/2}" stroke="var(--faint)" stroke-width="1.2"></line>`;
+    y+=bh+gap;
+  }
+  s+=`</svg>`;
+  $("#svgTrace").innerHTML=s;
+}
+function trRender(){
+  trDiagram();
+  const n=TR.steps.length;
+  $("#trPos").textContent = TR.i<0 ? `op 0/${n}` : `op ${TR.i+1}/${n}`;
+  if(TR.i<0){
+    $("#trOp").textContent="—"; $("#trF").textContent="—"; $("#trCum").textContent="—";
+    $("#trW").textContent="—"; $("#trIO").textContent="—";
+    const S = TR.phase==="prefill"?W.S:1;
+    $("#trCap").innerHTML=`Press <b>Step</b> — the hidden state enters the layer as <b>x [B,S,d_model] = [${W.B}, ${fmtI(S)}, ${fmtI(C.d_model)}]</b> (${TR.phase}).`;
+    return;
+  }
+  const st=TR.steps[TR.i];
+  const cum=TR.steps.slice(0,TR.i+1).reduce((a,s)=>a+s.fl,0);
+  const tot=TR.steps.reduce((a,s)=>a+s.fl,0);
+  $("#trOp").textContent=st.name;
+  $("#trF").textContent=fmtF(st.fl);
+  $("#trCum").textContent=fmtF(cum)+" ("+(100*cum/tot).toFixed(0)+"%)";
+  $("#trW").textContent = st.wsym==="—" ? "(no weights)" : st.wsym+" = "+st.wnum;
+  $("#trIO").textContent = st.io;
+  $("#trCap").innerHTML=`<b>${st.name}</b> — ${st.cap}`;
+  if(TR.i===TR.steps.length-1)
+    $("#trCap").innerHTML+=` <span class="t">Layer total ${fmtF(tot)} · ×${C.L} + lm_head ⇒ ${fmtF(tot*C.L + 2*W.B*(TR.phase==="prefill"?W.S:1)*C.d_model*C.V)} per ${TR.phase==="prefill"?"prefill":"token"}.</span>`;
+}
+function bindTracer(){
+  trBuild();
+  $("#trStep").onclick=()=>{ TR.i=Math.min(TR.i+1,TR.steps.length-1); trRender(); };
+  $("#trReset").onclick=()=>{ TR.i=-1; trRender(); };
+  $("#trPre").onclick=()=>{ TR.phase="prefill"; $("#trPre").classList.add("on"); $("#trDec").classList.remove("on"); TR.i=-1; trBuild(); trRender(); };
+  $("#trDec").onclick=()=>{ TR.phase="decode"; $("#trDec").classList.add("on"); $("#trPre").classList.remove("on"); TR.i=-1; trBuild(); trRender(); };
+  renderers.push(()=>{ trBuild(); TR.i=Math.min(TR.i,TR.steps.length-1); trRender(); });
+  trRender();
+}
+
+/* ── slide 5: GQA ── */
+function renderGqa(){
+  const idx=+$("#gqaSlider").value, hkv=GQA_CHOICES[idx], G=C.H/hkv;
+  $("#gqaHkv").textContent=hkv+(hkv===1?" (MQA)":hkv===C.H?" (MHA)":hkv===C.H_kv?" (shipped)":"");
+  $("#gqaG").textContent=G;
+  $("#gqaKW").textContent=`[H_kv·d_h, d] = [${fmtI(hkv*C.d_head)}, ${fmtI(C.d_model)}]`;
+  const kvt=2*C.L*hkv*C.d_head*W.kvbytes;
+  $("#gqaKV").textContent=fmtBy(kvt);
+  $("#gqaSave").textContent=(C.H/hkv)+"× smaller";
+  // diagram: 96 q squares (2 rows of 48), kv squares beneath, group shading
+  const qw=13, qh=13, cols=48, x0=14, y0=26;
+  let s=`<svg viewBox="0 0 ${x0*2+cols*qw} 150" width="100%" style="min-width:700px">`;
+  s+=`<text x="${x0}" y="14" font-size="10.5" fill="var(--muted)">H = ${C.H} query heads · each [S, d_head] = [${fmtI(W.S)}, ${C.d_head}]</text>`;
+  for(let i=0;i<C.H;i++){
+    const r=Math.floor(i/cols), c=i%cols;
+    const grp=Math.floor(i/G);
+    const shade = grp%2 ? 0.95 : 0.62;
+    s+=`<rect x="${x0+c*qw}" y="${y0+r*qh}" width="${qw-2}" height="${qh-2}" rx="2.5" fill="var(--c-att)" opacity="${shade}"></rect>`;
+  }
+  const kvW = cols*qw/hkv;
+  s+=`<text x="${x0}" y="${y0+2*qh+22}" font-size="10.5" fill="var(--muted)">H_kv = ${hkv} KV heads · cache/layer [${hkv}, S_ctx, ${C.d_head}] ×2 (K,V) — ${G} q-heads read each</text>`;
+  for(let g=0;g<hkv;g++){
+    s+=`<rect x="${x0+g*kvW}" y="${y0+2*qh+30}" width="${Math.max(kvW-3,4)}" height="20" rx="4" fill="var(--c-emb)" opacity="0.9"></rect>`;
+    // bracket
+    s+=`<path d="M ${x0+g*kvW} ${y0+2*qh+6} v5 h${Math.max(kvW-3,4)} v-5" fill="none" stroke="var(--faint)" stroke-width="1"></path>`;
+  }
+  s+=`<text x="${x0}" y="${y0+2*qh+72}" font-size="10.5" fill="var(--muted)">KV/token/layer = 2·${hkv}·${C.d_head}·${W.kvbytes} B = ${fmtI(2*hkv*C.d_head*W.kvbytes)} B · ×${C.L} layers = ${fmtBy(kvt)} · @ ${fmtI(W.ctx)} ctx ×B=${W.B}: ${fmtBy(kvt*W.ctx*W.B)}</text>`;
+  s+=`</svg>`;
+  $("#svgGqa").innerHTML=s;
+}
+function bindGqa(){
+  $("#gqaSlider").value = GQA_CHOICES.indexOf(C.H_kv);
+  $("#gqaTicks").innerHTML=`<span>1 = MQA</span><span>${C.H_kv} = shipped ▾</span><span>${C.H} = MHA</span>`;
+  $("#gqaSlider").addEventListener("input",renderGqa);
+  renderers.push(renderGqa); renderGqa();
+}
+
+/* ── slide 6: attention micro-sim ── */
+const AT={row:-1, data:toyAttn()};
+function atRender(){
+  const {S,dh,Q,K,V,scores,probs,out}=AT.data, r=AT.row;
+  $("#atPos").textContent=`row ${r+1}/${S}`;
+  const cell=26, gx=10;
+  function grid(x0,y0,rows,cols,get,hi){
+    let g=`<text x="${x0}" y="${y0-6}" font-size="10.5" fill="var(--muted)">${hi}</text>`;
+    for(let i=0;i<rows;i++)for(let j=0;j<cols;j++){
+      const v=get(i,j);
+      const on = v!==undefined && v!==null && i<=r || (hi[0]!=="s"&&hi[0]!=="p"&&hi[0]!=="o");
+      const isCur=i===r;
+      let fill="var(--panel2)", txt="var(--faint)", val="";
+      if(v===null){ fill="var(--code-bg)"; val="−∞"; }
+      else if(v!==undefined && (i<=r || "QKV".includes(hi[0]))){
+        val=(typeof v==="number")?(Number.isInteger(v)?v:v.toFixed(2)):v;
+        fill = isCur&&!"QKV".includes(hi[0]) ? "var(--c-att)" : "var(--panel2)";
+        txt = isCur&&!"QKV".includes(hi[0]) ? "#fff" : "var(--text)";
+      }
+      g+=`<rect x="${x0+j*cell}" y="${y0+i*cell}" width="${cell-2}" height="${cell-2}" rx="3" fill="${fill}" stroke="var(--line)" stroke-width="0.6"></rect>`;
+      if(val!=="") g+=`<text x="${x0+j*cell+cell/2-1}" y="${y0+i*cell+cell/2+3}" text-anchor="middle" font-size="8.6" fill="${txt}">${val}</text>`;
+    }
+    return g;
+  }
+  let s=`<svg viewBox="0 0 1150 ${40+8*cell+30}" width="100%" style="min-width:1000px">`;
+  s+=grid(14,30,S,dh,(i,j)=>Q[i][j],"Q [8,4]");
+  s+=grid(14+dh*cell+gx,30,S,dh,(i,j)=>K[i][j],"K [8,4]");
+  s+=grid(14+2*(dh*cell+gx),30,S,dh,(i,j)=>V[i][j],"V [8,4]");
+  const sx=14+3*(dh*cell+gx)+18;
+  s+=grid(sx,30,S,S,(i,j)=>scores[i][j],"scores QKᵀ/√4 + causal mask [8,8]");
+  const px=sx+S*cell+gx+18;
+  s+=grid(px,30,S,S,(i,j)=>scores[i][j]===null?undefined:probs[i][j],"softmax rows [8,8]");
+  const ox=px+S*cell+gx+18;
+  s+=grid(ox,30,S,dh,(i,j)=>out[i][j],"out = P·V [8,4]");
+  if(r>=0){
+    const zs=probs[r].reduce((a,b)=>a+b,0);
+    s+=`<text x="${px}" y="${40+8*cell+18}" font-size="10.5" fill="var(--teal)">row ${r}: Σp = ${zs.toFixed(3)} ✓ · attends ${r+1} position${r?"s":""}</text>`;
+  }
+  s+=`</svg>`;
+  $("#svgAttn").innerHTML=s;
+  $("#atCap").innerHTML = r<0
+    ? `Each <b>Step</b> processes one query row <i>i</i>: scores <b>q<sub>i</sub>·k<sub>j</sub>ᵀ/√d<sub>h</sub></b> for j ≤ i (causal), row softmax, weighted sum of V rows. In the real model this is [${W.B}, ${C.H}, S, S] with S up to ${fmtI(C.max_ctx)} — same three ops.`
+    : r<AT.data.S-1
+      ? `<b>row ${r}</b>: token ${r} attends to positions 0…${r}; future columns stay masked (−∞ → 0 after softmax).`
+      : `<b>done.</b> Lower-triangular probs × V. FlashAttention computes exactly this, tile by tile, without ever writing the [H,S,S] matrix to HBM.`;
+}
+function bindAttn(){
+  $("#atStep").onclick=()=>{ AT.row=Math.min(AT.row+1,AT.data.S-1); atRender(); };
+  $("#atReset").onclick=()=>{ AT.row=-1; atRender(); };
+  atRender();
+}
+
+/* ── slide 7: KV growth ── */
+const KV7={wmode:"fp8"};
+function renderKv(){
+  const ctx=+$("#kvSlider").value, by=W.kvbytes;
+  const kv=kvTotal(ctx,W.B,by), wt=weightBytes(KV7.wmode);
+  const GiB=1024**3;
+  $("#kv7ctx").textContent=fmtI(ctx)+" · B="+W.B;
+  $("#kv7f").textContent=`2·L·H_kv·d_h·${by}B = ${fmtI(DER.kvTok(by))} B/tok`;
+  $("#kv7kv").textContent=fmtBy(kv);
+  $("#kv7tot").textContent=fmtBy(wt+kv);
+  // chart: stacked area — weights slab + KV on top, over ctx 0..max
+  const CW=1080, CH=300, padL=64, padB=34, padT=14;
+  const X=c=>padL+(CW-padL-10)*c/C.max_ctx;
+  const maxY=(weightBytes("bf16")+kvTotal(C.max_ctx,W.B,2))/GiB*1.04;
+  const Y=g=>CH-padB-(CH-padB-padT)*g/maxY;
+  let s=`<svg viewBox="0 0 ${CW} ${CH}" width="100%" style="min-width:860px" id="kvChart">`;
+  // grid + y axis
+  const step=maxY>600?200:maxY>250?100:50;
+  for(let g=0;g<=maxY;g+=step){
+    s+=`<line x1="${padL}" y1="${Y(g)}" x2="${CW-10}" y2="${Y(g)}" stroke="var(--line)" stroke-width="0.7"></line>
+        <text x="${padL-8}" y="${Y(g)+3.5}" text-anchor="end" font-size="10" fill="var(--faint)">${g}</text>`;
+  }
+  s+=`<text x="14" y="${padT+10}" font-size="10" fill="var(--faint)">GiB</text>`;
+  // x ticks
+  for(const t of [0,65536,131072,196608,262144])
+    s+=`<text x="${X(t)}" y="${CH-padB+16}" text-anchor="middle" font-size="10" fill="var(--faint)">${t?fmtI(t/1024)+"k":"0"}</text>`;
+  // weights slab
+  const wg=wt/GiB;
+  s+=`<rect x="${padL}" y="${Y(wg)}" width="${CW-padL-10}" height="${Y(0)-Y(wg)}" fill="var(--c-oth)" opacity="0.45"></rect>`;
+  s+=`<text x="${padL+10}" y="${Y(wg/2)+4}" font-size="11" fill="var(--text)">weights (${KV7.wmode==="fp8"?"as shipped":"bf16"}) = ${fmtBy(wt)} — fixed</text>`;
+  // KV area on top of weights
+  let path=`M ${X(0)} ${Y(wg)}`;
+  for(let t=0;t<=C.max_ctx;t+=C.max_ctx/64) path+=` L ${X(t)} ${Y((wt+kvTotal(t,W.B,by))/GiB)}`;
+  path+=` L ${X(C.max_ctx)} ${Y(wg)} Z`;
+  s+=`<path d="${path}" fill="var(--c-att)" opacity="0.75"></path>`;
+  s+=`<path d="${path.replace(/ Z$/,"")}" fill="none" stroke="var(--c-att)" stroke-width="2"></path>`;
+  // capacity markers
+  const caps=[[80,"1×H100/A100"],[141,"1×H200"],[192,"1×B200"],[320,"4×H100"],[640,"8×H100"]];
+  for(const [g,lab] of caps){
+    if(g>maxY) continue;
+    s+=`<line x1="${padL}" y1="${Y(g)}" x2="${CW-10}" y2="${Y(g)}" stroke="var(--red)" stroke-width="1" stroke-dasharray="5 4" opacity="0.75"></line>
+        <text x="${CW-14}" y="${Y(g)-4}" text-anchor="end" font-size="10" fill="var(--red)">${g} GiB — ${lab}</text>`;
+  }
+  // slider marker
+  s+=`<line x1="${X(ctx)}" y1="${Y(0)}" x2="${X(ctx)}" y2="${Y((wt+kv)/GiB)}" stroke="var(--amber)" stroke-width="1.6" stroke-dasharray="3 3"></line>
+      <circle cx="${X(ctx)}" cy="${Y((wt+kv)/GiB)}" r="5" fill="var(--amber)"></circle>
+      <text x="${X(ctx)+8}" y="${Y((wt+kv)/GiB)-8}" font-size="11" fill="var(--amber)">${fmtBy(wt+kv)}</text>`;
+  s+=`<text x="${padL+10}" y="${CH-padB-8}" font-size="10.5" fill="var(--muted)">context →</text></svg>`;
+  $("#svgKv").innerHTML=s;
+  $("#leg7").innerHTML=`<span><span class="sw" style="background:var(--c-oth)"></span>weights (fixed)</span>
+    <span><span class="sw" style="background:var(--c-att)"></span>+ KV cache (${by===2?"bf16":"fp8"}, grows with S·B)</span>
+    <span><span class="sw" style="background:var(--red)"></span>GPU capacities</span>`;
+}
+function bindKv(){
+  $("#kvSlider").addEventListener("input",renderKv);
+  const b=$("#kv7bf"), f=$("#kv7fp");
+  b.onclick=()=>{W.kvbytes=2;b.classList.add("on");f.classList.remove("on");$("#kvbf").classList.add("on");$("#kvfp").classList.remove("on");rerenderAll();};
+  f.onclick=()=>{W.kvbytes=1;f.classList.add("on");b.classList.remove("on");$("#kvfp").classList.add("on");$("#kvbf").classList.remove("on");rerenderAll();};
+  $("#w7fp").onclick=()=>{KV7.wmode="fp8";$("#w7fp").classList.add("on");$("#w7bf").classList.remove("on");renderKv();};
+  $("#w7bf").onclick=()=>{KV7.wmode="bf16";$("#w7bf").classList.add("on");$("#w7fp").classList.remove("on");renderKv();};
+  renderers.push(()=>{ $("#kv7bf").classList.toggle("on",W.kvbytes===2); $("#kv7fp").classList.toggle("on",W.kvbytes===1); renderKv(); });
+  renderKv();
+}
+
+/* ── slide 8: MLP ── */
+function renderMlp(){
+  const S=W.S,B=W.B,d=C.d_model,dff=C.d_ff;
+  $("#mlpRatio").textContent=(D.mlp/D.attn).toFixed(2)+"×";
+  let s=`<svg viewBox="0 0 1120 210" width="100%" style="min-width:900px">${DEFS}`;
+  s+=box(16,80,96,50,"var(--c-oth)","x",`[${B}, ${fmtI(S)}, ${fmtI(d)}]`);
+  s+=arrow(112,92,196,52,"",true); s+=arrow(112,118,196,158,"",true);
+  s+=box(196,28,200,48,"var(--c-mlp)","gate_proj",`[${fmtI(dff)}, ${fmtI(d)}]`);
+  s+=box(196,134,200,48,"var(--c-mlp)","up_proj",`[${fmtI(dff)}, ${fmtI(d)}]`);
+  s+=arrow(396,52,486,52,`[${B}, ${fmtI(S)}, ${fmtI(dff)}]`,true);
+  s+=arrow(396,158,486,158,`[${B}, ${fmtI(S)}, ${fmtI(dff)}]`,false);
+  s+=box(486,28,110,48,"var(--c-oth)","SiLU","x·σ(x)");
+  s+=arrow(596,52,646,95,"",true); s+=arrow(596,158,646,120,"",false);
+  s+=`<circle cx="660" cy="106" r="17" fill="var(--panel2)" stroke="var(--faint)"></circle><text x="660" y="111" text-anchor="middle" font-size="14" fill="var(--text)">⊙</text>`;
+  s+=arrow(677,106,742,106,`[${B}, ${fmtI(S)}, ${fmtI(dff)}]`,true);
+  s+=box(742,82,200,48,"var(--c-mlp)","down_proj",`[${fmtI(d)}, ${fmtI(dff)}]`);
+  s+=arrow(942,106,1010,106,`[${B}, ${fmtI(S)}, ${fmtI(d)}]`,true);
+  s+=`<circle cx="1026" cy="106" r="15" fill="var(--panel2)" stroke="var(--faint)"></circle><text x="1026" y="111" text-anchor="middle" font-size="13" fill="var(--text)">＋</text>`;
+  s+=`<text x="1052" y="110" font-size="11" fill="var(--muted)">residual</text>`;
+  s+=`<text x="196" y="202" font-size="10.5" fill="var(--muted)">3 matrices · ${fmtI(D.mlp)} params/layer · ${fmtF(6*B*S*d*dff)} per layer ${TRUNC8()}</text>`;
+  s+=`</svg>`;
+  $("#svgMlp").innerHTML=s;
+  // per-layer share bar
+  const tot=D.layer, bw=1080;
+  const segs=[["MLP",D.mlp,"var(--c-mlp)"],["attention",D.attn,"var(--c-att)"],["norms",2*d,"var(--c-oth)"]];
+  let b=`<svg viewBox="0 0 1120 70" width="100%" style="min-width:860px"><text x="16" y="16" font-size="11" fill="var(--faint)">ONE LAYER = ${fmtI(tot)} PARAMS</text>`;
+  let x=16;
+  for(const [lab,v,col] of segs){
+    const w=Math.max(bw*v/tot,3);
+    b+=`<rect x="${x}" y="24" width="${Math.max(w-2,2)}" height="22" rx="4" fill="${col}"></rect>`;
+    if(w>60) b+=`<text x="${x+6}" y="62" font-size="10.5" fill="var(--muted)">${lab} ${fmtI(v)} (${(100*v/tot).toFixed(1)}%)</text>`;
+    x+=w;
+  }
+  b+=`</svg>`;
+  $("#svgMlpBar").innerHTML=b;
+  $("#leg8").innerHTML=`<span><span class="sw" style="background:var(--c-mlp)"></span>MLP</span>
+    <span><span class="sw" style="background:var(--c-att)"></span>attention</span>
+    <span><span class="sw" style="background:var(--c-oth)"></span>norms/elementwise</span>`;
+  function TRUNC8(){ return `(prefill S=${fmtI(S)})`; }
+}
+
+/* ── slide 9: treemap ── */
+function renderTree(){
+  const Wd=1100, Ht=430;
+  const rects=treemapRects(Wd,Ht);
+  const tip=$("#tmtip");
+  let s=`<svg viewBox="0 0 ${Wd} ${Ht}" width="100%" style="min-width:900px" id="tmsvg">`;
+  for(const r of rects){
+    s+=`<g class="tmblk" data-key="${r.key}"><rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="6" fill="${r.c}" opacity="0.9"></rect>`;
+    if(r.h>26 && r.w>110){
+      s+=`<text x="${r.x+12}" y="${r.y+22}" font-size="13" font-weight="700" fill="#fff">${r.label}</text>
+          <text x="${r.x+12}" y="${r.y+40}" font-size="11.5" fill="#fff" opacity="0.9">${fmtBn(r.v)} · ${(100*r.v/D.total).toFixed(2)}%</text>`;
+    } else if(r.w>60){
+      s+=`<text x="${r.x+8}" y="${r.y+r.h/2+3.5}" font-size="10" fill="#fff">${r.label}</text>`;
+    }
+    s+=`</g>`;
+  }
+  s+=`</svg>`;
+  $("#svgTree").innerHTML=s;
+  $("#tmSum").textContent=fmtI(rects.reduce((a,r)=>a+r.v,0))+" ✓";
+  $("#tmTrunk").textContent=(100*(D.attnAll+D.mlpAll+D.normsAll)/D.total).toFixed(1)+"%";
+  document.querySelectorAll(".tmblk").forEach(g=>{
+    const r=rects.find(r=>r.key===g.dataset.key);
+    g.addEventListener("mousemove",e=>{
+      tip.style.display="block";
+      tip.style.left=Math.min(e.clientX+14,innerWidth-360)+"px"; tip.style.top=(e.clientY+14)+"px";
+      tip.innerHTML=`<b>${r.label}</b><br><span class="f">${r.f}</span><br>= ${fmtI(r.v)} (${(100*r.v/D.total).toFixed(3)}%)`;
+    });
+    g.addEventListener("mouseleave",()=>tip.style.display="none");
+  });
+}
+
+/* ── slide 10: roofline ── */
+const RF={phase:"prefill"};
+function renderRoof(){
+  const hw=C.hw, ridge=hw.bf16_flops/hw.hbm_bw;
+  $("#rfHw").textContent=`${hw.name}: ${hw.bf16_flops/1e12} TF bf16 · ${hw.hbm_bw/1e12} TB/s · ridge AI = ${ridge.toFixed(0)}`;
+  const ops=rooflineOps(C,W,RF.phase);
+  const CW=560, CH=340, padL=56, padB=40, padT=16;
+  const lx=v=>padL+(CW-padL-14)*(Math.log10(v)+1)/5.2;          // AI 0.1 .. ~1.6e4
+  const ly=v=>CH-padB-(CH-padB-padT)*(Math.log10(v/1e12)+1.2)/4.4; // 0.06 .. ~1000 TF/s
+  let s=`<svg viewBox="0 0 ${CW} ${CH}" width="100%">`;
+  for(const e of [-1,0,1,2,3,4]){
+    s+=`<line x1="${lx(10**e)}" y1="${padT}" x2="${lx(10**e)}" y2="${CH-padB}" stroke="var(--line)" stroke-width="0.6"></line>
+        <text x="${lx(10**e)}" y="${CH-padB+16}" text-anchor="middle" font-size="9.5" fill="var(--faint)">${10**e>=1?fmtI(10**e):10**e}</text>`;
+  }
+  for(const e of [-1,0,1,2,3]){
+    s+=`<text x="${padL-6}" y="${ly(10**e*1e12)+3}" text-anchor="end" font-size="9.5" fill="var(--faint)">${10**e>=1?fmtI(10**e):10**e}</text>`;
+  }
+  s+=`<text x="${CW/2}" y="${CH-6}" text-anchor="middle" font-size="10" fill="var(--muted)">arithmetic intensity (FLOPs/byte, log)</text>`;
+  s+=`<text x="12" y="${padT+4}" font-size="10" fill="var(--muted)">TF/s</text>`;
+  // roof
+  const xr=lx(ridge);
+  s+=`<rect x="${padL}" y="${padT}" width="${xr-padL}" height="${CH-padB-padT}" fill="var(--c-vis)" opacity="0.08"></rect>`;
+  s+=`<text x="${padL+8}" y="${padT+16}" font-size="10" fill="var(--red)">memory-bound</text>`;
+  s+=`<text x="${xr+10}" y="${padT+16}" font-size="10" fill="var(--teal)">compute-bound</text>`;
+  s+=`<line x1="${lx(0.1)}" y1="${ly(0.1*hw.hbm_bw)}" x2="${xr}" y2="${ly(hw.bf16_flops)}" stroke="var(--muted)" stroke-width="1.8"></line>`;
+  s+=`<line x1="${xr}" y1="${ly(hw.bf16_flops)}" x2="${lx(16000)}" y2="${ly(hw.bf16_flops)}" stroke="var(--muted)" stroke-width="1.8"></line>`;
+  s+=`<line x1="${xr}" y1="${padT}" x2="${xr}" y2="${CH-padB}" stroke="var(--muted)" stroke-width="0.8" stroke-dasharray="4 4"></line>`;
+  // dots
+  const seen={};
+  for(const op of ops){
+    const perf=Math.min(hw.bf16_flops, op.ai*hw.hbm_bw);
+    const x=lx(Math.max(op.ai,0.1)), y=ly(Math.max(perf,0.06e12));
+    const key=Math.round(x/12)+"_"+Math.round(y/12);
+    const dy=(seen[key]=(seen[key]||0)+1)>1?(seen[key]-1)*13:0;
+    s+=`<circle cx="${x}" cy="${y+dy}" r="6" fill="${FAMC[op.fam]}" stroke="var(--bg)" stroke-width="1.6"><title>${op.name}: AI ${op.ai.toFixed(1)}</title></circle>`;
+    s+=`<text x="${x+9}" y="${y+dy+4}" font-size="9.3" fill="var(--muted)">${op.name}</text>`;
+  }
+  s+=`</svg>`;
+  $("#svgRoof").innerHTML=s;
+  $("#rfTable").innerHTML=`<tr><th>op</th><th>AI ${RF.phase}</th><th>bound</th></tr>`+
+    ops.map(o=>`<tr><td class="mono">${o.name}</td><td class="num">${o.ai>=10?fmtI(o.ai):o.ai.toFixed(1)}</td>
+      <td>${o.ai>ridge?'<span class="t">compute</span>':'<span class="r">memory</span>'}</td></tr>`).join("");
+  $("#rfNote").innerHTML = RF.phase==="prefill"
+    ? `naive QKᵀ/·V write the [${C.H}, S, S] score tensor to HBM — FlashAttention fuses the three ops so scores stay in SRAM, moving attention to the compute side. Weight GEMMs are already far right.`
+    : `decode: every weight GEMM is a GEMV (AI ≈ 1 — read ${fmtBy(weightBytes("fp8"))} of weights per token); attention reads the whole KV cache (${fmtBy(kvTotal(W.ctx,W.B,W.kvbytes))} @ ${fmtI(W.ctx)}) per token. The <b>EAGLE draft</b> (same trunk, ${C.eagle.layers} layers) drafts tokens the 88-layer model verifies in one prefill-like pass — trading bandwidth for compute.`;
+  $("#leg10").innerHTML=`<span><span class="sw" style="background:var(--c-att)"></span>attention ops</span>
+    <span><span class="sw" style="background:var(--c-mlp)"></span>MLP ops</span>
+    <span><span class="sw" style="background:var(--c-oth)"></span>elementwise</span>`;
+}
+function bindRoof(){
+  $("#rfPre").onclick=()=>{RF.phase="prefill";$("#rfPre").classList.add("on");$("#rfDec").classList.remove("on");renderRoof();};
+  $("#rfDec").onclick=()=>{RF.phase="decode";$("#rfDec").classList.add("on");$("#rfPre").classList.remove("on");renderRoof();};
+  renderers.push(renderRoof); renderRoof();
+}
+
+/* ── slide 11: recap ── */
+function renderRecap(){
+  const GiB=1024**3;
+  const kvRow=(s)=>`<tr><td class="mono">${fmtI(s)}</td><td class="num">${fmtBy(kvTotal(s,1,2))}</td><td class="num">${fmtBy(kvTotal(s,1,1))}</td></tr>`;
+  $("#recap").innerHTML=`
+  <div class="panelbox"><h3>decoder</h3><table>
+    <tr><td>d_model / L</td><td class="num">${fmtI(C.d_model)} / ${C.L}</td></tr>
+    <tr><td>heads H / H_kv / d_head</td><td class="num">${C.H} / ${C.H_kv} / ${C.d_head}</td></tr>
+    <tr><td>d_ff (SwiGLU) / V</td><td class="num">${fmtI(C.d_ff)} / ${fmtI(C.V)}</td></tr>
+    <tr><td>norm / biases / tied</td><td class="num">RMS ε=1e-5 / none / no</td></tr>
+    <tr><td>RoPE θ · YaRN</td><td class="num">${fmtI(C.rope.theta)} · ×${C.rope.factor} → ${fmtI(C.max_ctx)}</td></tr>
+    <tr><td>attention_factor</td><td class="num">${D.yarnAF.toFixed(5)} (post-${C.rope.fix_commit})</td></tr>
+  </table></div>
+  <div class="panelbox"><h3>parameters (checkpoint-exact)</h3><table>
+    <tr><td>MLP ×${C.L}</td><td class="num">${fmtI(D.mlpAll)}</td></tr>
+    <tr><td>attention ×${C.L}</td><td class="num">${fmtI(D.attnAll)}</td></tr>
+    <tr><td>embed + lm_head</td><td class="num">${fmtI(2*D.emb)}</td></tr>
+    <tr><td>vision + projector</td><td class="num">${fmtI(D.vis+D.proj)}</td></tr>
+    <tr><td>norms</td><td class="num">${fmtI(D.normsAll)}</td></tr>
+    <tr><td><b>total</b></td><td class="num"><b>${fmtI(D.total)}</b> ${D.total===C.checkpoint_total_params?"✓":"✗"}</td></tr>
+  </table></div>
+  <div class="panelbox"><h3>KV cache (B=1)</h3><table>
+    <tr><td>ctx</td><td class="num">bf16</td><td class="num">fp8</td></tr>
+    ${[8192,32768,131072,262144].map(kvRow).join("")}
+    <tr><td>per token</td><td class="num">${fmtBy(D.kvTok(2))}</td><td class="num">${fmtBy(D.kvTok(1))}</td></tr>
+  </table></div>
+  <div class="panelbox"><h3>memory</h3><table>
+    <tr><td>weights bf16</td><td class="num">${fmtBy(C.checkpoint_total_params*2)}</td></tr>
+    <tr><td>weights fp8 (shipped)</td><td class="num">${fmtBy(C.shipped.total_bytes)}</td></tr>
+    <tr><td>+ bf16 KV @ ${fmtI(W.ctx)}</td><td class="num">${fmtBy(C.shipped.total_bytes+kvTotal(W.ctx,W.B,2))}</td></tr>
+    <tr><td>GQA vs MHA KV</td><td class="num">${C.H/C.H_kv}× smaller</td></tr>
+  </table></div>
+  <div class="panelbox"><h3>FLOPs (workload)</h3><table>
+    <tr><td>prefill layer @ S=${fmtI(W.S)}</td><td class="num">${fmtF(tracerSteps(C,W,"prefill").reduce((a,s)=>a+s.fl,0))}</td></tr>
+    <tr><td>prefill model + head</td><td class="num">${fmtF(C.L*tracerSteps(C,W,"prefill").reduce((a,s)=>a+s.fl,0)+2*W.B*W.S*C.d_model*C.V)}</td></tr>
+    <tr><td>decode /tok @ ${fmtI(W.ctx)}</td><td class="num">${fmtF(C.L*tracerSteps(C,W,"decode").reduce((a,s)=>a+s.fl,0)+2*W.B*C.d_model*C.V)}</td></tr>
+    <tr><td>ridge (${C.hw.name})</td><td class="num">AI ${(C.hw.bf16_flops/C.hw.hbm_bw).toFixed(0)}</td></tr>
+  </table></div>
+  <div class="panelbox"><h3>vision & drafting</h3><table>
+    <tr><td>Pixtral tower</td><td class="num">${C.vision.L}L · d ${C.vision.d}</td></tr>
+    <tr><td>1540² image</td><td class="num">${fmtI(D.patches)} patches → ${fmtI(D.imgTokens)} tokens</td></tr>
+    <tr><td>projector out</td><td class="num">[${fmtI(D.imgTokens)}, ${fmtI(C.d_model)}]</td></tr>
+    <tr><td>EAGLE draft</td><td class="num">same trunk, L=${C.eagle.layers} (≈${fmtBn(C.eagle.layers*D.layer)})</td></tr>
+  </table></div>`;
+}
+
+/* ── deck nav ── */
+const slides=[...document.querySelectorAll(".slide")];
+let cur=0;
+function go(i){
+  cur=Math.max(0,Math.min(slides.length-1,i));
+  slides.forEach((s,j)=>s.classList.toggle("active",j===cur));
+  document.getElementById("pgnum").textContent=(cur+1)+"/"+slides.length;
+  document.getElementById("barTitle").textContent=slides[cur].dataset.title;
+  [...document.getElementById("dots").children].forEach((d,j)=>d.classList.toggle("on",j===cur));
+}
+function initDeck(){
+  const dots=document.getElementById("dots");
+  slides.forEach((s,j)=>{ const b=document.createElement("button");
+    b.title=s.dataset.title; b.onclick=()=>go(j); dots.appendChild(b); });
+  document.getElementById("prevb").onclick=()=>go(cur-1);
+  document.getElementById("nextb").onclick=()=>go(cur+1);
+  addEventListener("keydown",e=>{
+    if(e.target.tagName==="INPUT"||e.target.tagName==="BUTTON") return;
+    if(e.key==="ArrowLeft") go(cur-1);
+    else if(e.key==="ArrowRight") go(cur+1);
+    else if(e.key===" "){
+      const t=slides[cur].dataset.title;
+      if(t==="Shape tracer"){ e.preventDefault(); document.getElementById("trStep").click(); }
+      else if(t==="Attention micro-sim"){ e.preventDefault(); document.getElementById("atStep").click(); }
+    }
+  });
+  go(0);
+}
+
+/* boot */
+fillFields(); bindKnobs(); renderNotation(); renderModel();
+bindTracer(); bindGqa(); bindAttn(); bindKv(); renderMlp(); renderTree(); bindRoof(); renderRecap();
+renderers.push(renderNotation, renderModel, renderMlp, renderRecap);
+initDeck();
+}
+</script>
+</body>
+</html>
